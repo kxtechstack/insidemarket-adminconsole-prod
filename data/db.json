@@ -1,0 +1,246 @@
+{
+  "customers": [
+    {
+      "id": "cust-5",
+      "name": "Research Insights Co.",
+      "company": "Research Insights Co.",
+      "sector": "Market Research & Consulting",
+      "status": "active",
+      "email": "partners@researchinsights.co",
+      "joinedDate": "2026-05-12",
+      "apiCallsCount": 384,
+      "promptVariables": {
+        "competitors": "Frost & Sullivan, IDC, Gartner",
+        "focusProducts": "market research, consulting, fintech, logistics",
+        "geographicScope": "IN, SG, MY",
+        "reportingTone": "strategic"
+      },
+      "sectorsToAvoid": "aerospace, defence",
+      "dealSizeMin": 50000,
+      "dealSizeMax": 500000,
+      "geographyWeights": {
+        "IN": 1,
+        "SG": 0.8,
+        "MY": 0.7
+      },
+      "sectorWeights": {
+        "market research": 0.9,
+        "consulting": 0.85,
+        "fintech": 0.8,
+        "logistics": 0.75
+      },
+      "targetAccounts": "Zetwerk, NovaPay, Delhivery",
+      "existingRelationships": "",
+      "blacklistCompanies": "Competitor clients, conflicted companies",
+      "keyContacts": "",
+      "pipelineStatus": "available — normal scoring",
+      "sectorsToEnter": ""
+    },
+    {
+      "id": "cust-1",
+      "name": "Atherton Industries",
+      "company": "Atherton Heavy Machinery",
+      "sector": "Industrial Manufacturing",
+      "status": "active",
+      "email": "ops@atherton.com",
+      "joinedDate": "2026-01-15",
+      "apiCallsCount": 142,
+      "promptVariables": {
+        "competitors": "Caterpillar, Komatsu, Deere & Co",
+        "focusProducts": "Electric hydraulic excavators, autonomous dump trucks",
+        "geographicScope": "North America & EU",
+        "reportingTone": "strategic"
+      }
+    },
+    {
+      "id": "cust-2",
+      "name": "BioSphere Diagnostics",
+      "company": "BioSphere MedTech",
+      "sector": "Biotechnology & Healthcare",
+      "status": "active",
+      "email": "research@biosphere.io",
+      "joinedDate": "2026-02-10",
+      "apiCallsCount": 98,
+      "promptVariables": {
+        "competitors": "Roche, Abbott Labs, Thermo Fisher",
+        "focusProducts": "Next-gen PCR kits, portable point-of-care disease screens",
+        "geographicScope": "Global",
+        "reportingTone": "formal"
+      }
+    },
+    {
+      "id": "cust-3",
+      "name": "Vantage Finance",
+      "company": "Vantage Quantitative Capital",
+      "sector": "Financial Services & Fintech",
+      "status": "active",
+      "email": "intel@vantagequant.com",
+      "joinedDate": "2026-03-01",
+      "apiCallsCount": 215,
+      "promptVariables": {
+        "competitors": "Citadel, Jane Street, Renaissance Technologies",
+        "focusProducts": "Automated alternative data arbitrage, volatility index trackers",
+        "geographicScope": "US & APAC",
+        "reportingTone": "actionable"
+      }
+    },
+    {
+      "id": "cust-4",
+      "name": "Aether Grid Solutions",
+      "company": "Aether Renewables",
+      "sector": "Energy & Utilities",
+      "status": "suspended",
+      "email": "grid-intel@aethergrid.net",
+      "joinedDate": "2026-03-18",
+      "apiCallsCount": 12,
+      "promptVariables": {
+        "competitors": "NextEra Energy, Enel, Siemens Energy",
+        "focusProducts": "Solid-state grid battery controllers, virtual power plants",
+        "geographicScope": "Western EU",
+        "reportingTone": "concise"
+      }
+    }
+  ],
+  "prompts": [
+    {
+      "id": "prompt-1",
+      "title": "Competitor Market Threat Matrix",
+      "category": "Competitor Tracking",
+      "content": "Analyze the current threat landscape for ${company} operating in the ${sector} industry. \nFocus especially on their core products: ${focusProducts}.\nCompare their roadmap against primary competitors: ${competitors}.\nIdentify at least 3 potential technical or market threats that the client needs to address in ${geographicScope}.\nProvide the report in a highly ${reportingTone} tone.",
+      "status": "active",
+      "version": "2.1.0",
+      "updatedBy": "Sarah Jenkins (Senior AI Architect)",
+      "lastUsed": "2026-06-03T08:12:00Z"
+    },
+    {
+      "id": "prompt-2",
+      "title": "Sector Disruptor & Structural Trends Report",
+      "category": "Trend Report",
+      "content": "You are a lead sector intelligence analyst. Create a detailed structural trends report for ${company} within the ${sector} domain.\n\nOutline: \n1. High-growth macro vectors occurring inside ${geographicScope} that could influence ${focusProducts}.\n2. Rate of technical obsolescence facing established business units due to emerging competitor workflows (${competitors}).\n3. Recommendations for strategic pivot points.\n\nKeep the formatting strict using clean markdown headings. Tone: ${reportingTone}.",
+      "status": "active",
+      "version": "1.4.0",
+      "updatedBy": "David Chen (Director of Intelligence)",
+      "lastUsed": "2026-06-02T16:45:00Z"
+    },
+    {
+      "id": "prompt-3",
+      "title": "Alternative Data Sentiment Signals",
+      "category": "Sentiment Analysis",
+      "content": "Collect sentiment signals regarding ${company} and its competitors (${competitors}) based on alternative data representations. \nAnalyze mentions of product lines: ${focusProducts} in tech forums and industry report metadata.\nIdentify if market reception is bullish or bearish and present a concise summary. Deliver this report in a/an ${reportingTone} tone.",
+      "status": "draft",
+      "version": "0.8.0",
+      "updatedBy": "Sarah Jenkins (Senior AI Architect)",
+      "lastUsed": "Never"
+    },
+    {
+      "id": "prompt-4",
+      "title": "Macro-Economic Vulnerability Audit",
+      "category": "Analysis",
+      "content": "Audit how macroeconomic movements (interest rates, supply chain adjustments, trade policies) impact ${company}'s sales potential for ${focusProducts} in ${geographicScope}.\nContrast this vulnerability with ${competitors}. Give your advice in a ${reportingTone} summary.",
+      "status": "active",
+      "version": "1.1.0",
+      "updatedBy": "Alex Mercer (Principal Analyst)",
+      "lastUsed": "2026-06-03T05:30:00Z"
+    }
+  ],
+  "logs": [
+    {
+      "id": "log-1",
+      "timestamp": "2026-06-03T08:12:00Z",
+      "customerId": "cust-1",
+      "customerName": "Atherton Industries",
+      "company": "Atherton Heavy Machinery",
+      "promptId": "prompt-1",
+      "promptTitle": "Competitor Market Threat Matrix",
+      "model": "gemini-3.5-flash",
+      "promptTokens": 380,
+      "completionTokens": 812,
+      "latencyMs": 1420,
+      "status": "success",
+      "promptText": "Analyze the current threat landscape for Atherton Heavy Machinery operating in the Industrial Manufacturing industry...",
+      "completionText": "### Market Intelligence Threat Report\n\n**1. Solid-State Powertrains Outpacing Atherton**\nCompetitors Komatsu and Caterpillar have both announced pilot programs for fully electric excavators with solid-state batteries which can support 12-hour continuous cycles. Atherton's current electric range is limited to 6 hours.\n\n**2. Autonomous Coordination Software Dominance**\nDeere & Co is deploying an AI-driven fleet coordination protocol across EU construction zones, showing efficiency increases of 22%. Your client's autonomous trucks need integration interfaces.\n\n**3. Supplier Constriction in North America**\nRegulatory adjustments are squeezing steel alloy supply chains, raising prices by 8%. Recommendation: secure alternative raw stock commitments.",
+      "promptVariablesUsed": {
+        "competitors": "Caterpillar, Komatsu, Deere & Co",
+        "focusProducts": "Electric hydraulic excavators, autonomous dump trucks",
+        "geographicScope": "North America & EU",
+        "reportingTone": "strategic"
+      }
+    },
+    {
+      "id": "log-2",
+      "timestamp": "2026-06-03T05:30:00Z",
+      "customerId": "cust-3",
+      "customerName": "Vantage Finance",
+      "company": "Vantage Quantitative Capital",
+      "promptId": "prompt-4",
+      "promptTitle": "Macro-Economic Vulnerability Audit",
+      "model": "gemini-3.5-flash",
+      "promptTokens": 410,
+      "completionTokens": 520,
+      "latencyMs": 1120,
+      "status": "success",
+      "promptText": "Audit how macroeconomic movements impact Vantage Quantitative Capital's sales potential for automated alternative data arbitrage...",
+      "completionText": "### Macroeconomic Risk Assessment\n* **Interest Rate Path:** Dynamic rates support higher volatility profiles which directly benefits quantitative vol index metrics.\n* **Arbitrage Compression:** Increased liquidity compression in APAC is narrowing index margins by approximately 3 basis points, meaning trade execution latency needs to decrease by at least 15% to capture identical spreads compared to Citadel and Jane Street.",
+      "promptVariablesUsed": {
+        "competitors": "Citadel, Jane Street, Renaissance Technologies",
+        "focusProducts": "Automated alternative data arbitrage, volatility index trackers",
+        "geographicScope": "US & APAC",
+        "reportingTone": "actionable"
+      }
+    },
+    {
+      "id": "log-3",
+      "timestamp": "2026-06-02T16:45:00Z",
+      "customerId": "cust-2",
+      "customerName": "BioSphere Diagnostics",
+      "company": "BioSphere MedTech",
+      "promptId": "prompt-2",
+      "promptTitle": "Sector Disruptor & Structural Trends Report",
+      "model": "gemini-3.5-flash",
+      "promptTokens": 520,
+      "completionTokens": 920,
+      "latencyMs": 1950,
+      "status": "success",
+      "promptText": "Create a detailed structural trends report for BioSphere MedTech within the Biotechnology & Healthcare domain...",
+      "completionText": "### BioSphere MedTech Sector Intelligence Report\n\n#### 1. High-Growth Macro Vectors (Global)\nPoint-of-care testing demand is increasing exponentially at a 18.5% CAGR as decentralized clinical models gain traction in rural sites. Portable disease screens are poised to capture 40% of standard lab diagnostics market shares.\n\n#### 2. Competitor Technological Leaps\n- **Roche:** Released micro-fluidic cartridge diagnostics enabling automated PCR analysis inside 12 minutes.\n- **Abbott Labs:** Rolled out continuous virus sequencing panels for multi-pathogen identification.\n\n#### 3. Strategic Recommendations\n- **Accelerate Portable Disease Screens:** BioSphere must fast-track clinical evaluation for its hand-held system before Abbott gains a dominant patent lock.\n- **Microstructure Upgrades:** Partner with contract manufacturers to integrate silicon microchips to match Roche's 12-minute threshold.",
+      "promptVariablesUsed": {
+        "competitors": "Roche, Abbott Labs, Thermo Fisher",
+        "focusProducts": "Next-gen PCR kits, portable point-of-care disease screens",
+        "geographicScope": "Global",
+        "reportingTone": "formal"
+      }
+    },
+    {
+      "id": "log-4",
+      "timestamp": "2026-06-02T11:20:00Z",
+      "customerId": "cust-1",
+      "customerName": "Atherton Industries",
+      "company": "Atherton Heavy Machinery",
+      "promptId": "prompt-1",
+      "promptTitle": "Competitor Market Threat Matrix",
+      "model": "gemini-3.5-flash",
+      "promptTokens": 380,
+      "completionTokens": 45,
+      "latencyMs": 450,
+      "status": "error",
+      "errorMessage": "API key rate limit exceeded or invalid context parsing",
+      "promptText": "Analyze the current threat landscape for Atherton Heavy Machinery...",
+      "completionText": "",
+      "promptVariablesUsed": {
+        "competitors": "Caterpillar, Komatsu, Deere & Co",
+        "focusProducts": "Electric hydraulic excavators, autonomous dump trucks",
+        "geographicScope": "North America & EU",
+        "reportingTone": "strategic"
+      }
+    }
+  ],
+  "settings": {
+    "geminiModel": "gemini-3.5-flash",
+    "temperature": 0.7,
+    "maxTokens": 1548,
+    "rateLimitEnabled": true,
+    "maxRequestsPerMin": 60,
+    "defaultSystemInstruction": "You are an elite, highly precise Market Intelligence AI Agent specialized in uncovering business risks, competitive movements, and technological bottlenecks. Avoid fluff, offer direct quantitative-rich briefings.",
+    "intelligenceTone": "strategic"
+  }
+}

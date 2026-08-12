@@ -1,0 +1,8 @@
+{
+  "name": "Inside Market Admin Console",
+  "description": "Backend admin console for managing customers, prompt templates, usage statistics, and API keys.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
