@@ -27,6 +27,7 @@ interface MonitoringScopeTabProps {
   confirmDeleteCustomTaskId: string | null;
   setConfirmDeleteCustomTaskId: (id: string | null) => void;
   setCustomTasks: React.Dispatch<React.SetStateAction<Record<string, any[]>>>;
+  showToast: (message: string, type?: 'success' | 'error') => void;
 }
 
 export const MonitoringScopeTab: React.FC<MonitoringScopeTabProps> = ({
@@ -44,7 +45,8 @@ export const MonitoringScopeTab: React.FC<MonitoringScopeTabProps> = ({
   setExpandedCategories,
   confirmDeleteCustomTaskId,
   setConfirmDeleteCustomTaskId,
-  setCustomTasks
+  setCustomTasks,
+  showToast
 }) => {
   const { modules: INTELLIGENCE_MODULES, loading } = useIntelligenceModules();
 
@@ -69,43 +71,12 @@ export const MonitoringScopeTab: React.FC<MonitoringScopeTabProps> = ({
       next[category.id] = [...arr, signal.id];
     }
     setSelectedSignals(next);
-
-    const currentClientId = selectedClientId;
-    console.log('Signal toggled:', signal.id, !isSelected, 'for client:', currentClientId)
-    
-    if (!isSelected) {
-      const { data, error } = await supabase.schema('admin')
-        .from('client_signals')
-        .insert({ client_id: currentClientId, signal_id: signal.id })
-      console.log('Insert result:', data, error)
-    } else {
-      const { data, error } = await supabase.schema('admin')
-        .from('client_signals')
-        .delete()
-        .eq('client_id', currentClientId)
-        .eq('signal_id', signal.id)
-      console.log('Delete result:', data, error)
-    }
   };
 
   const handleToggleCategory = async (category: any, isAllSelected: boolean) => {
     const next = { ...selectedSignals };
     next[category.id] = isAllSelected ? [] : category.items.map((s: any) => s.id);
     setSelectedSignals(next);
-
-    try {
-      if (isAllSelected) {
-         for (const sig of category.items) {
-            await supabase.schema('admin').from('client_signals').delete().eq('client_id', selectedClientId).eq('signal_id', sig.id);
-         }
-      } else {
-         for (const sig of category.items) {
-            await supabase.schema('admin').from('client_signals').upsert({ client_id: selectedClientId, signal_id: sig.id }, { onConflict: 'client_id,signal_id' });
-         }
-      }
-    } catch (e) {
-      console.error(e);
-    }
   };
 
   const handleToggleModuleAll = async (module: any, isClear: boolean) => {
@@ -114,24 +85,6 @@ export const MonitoringScopeTab: React.FC<MonitoringScopeTabProps> = ({
       next[cat.id] = isClear ? [] : cat.items.map((s: any) => s.id);
     });
     setSelectedSignals(next);
-
-    try {
-      if (isClear) {
-        for (const cat of module.categories) {
-          for (const sig of cat.items) {
-             await supabase.schema('admin').from('client_signals').delete().eq('client_id', selectedClientId).eq('signal_id', sig.id);
-          }
-        }
-      } else {
-        for (const cat of module.categories) {
-          for (const sig of cat.items) {
-             await supabase.schema('admin').from('client_signals').upsert({ client_id: selectedClientId, signal_id: sig.id }, { onConflict: 'client_id,signal_id' });
-          }
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    }
   };
 
   return (
@@ -417,6 +370,7 @@ export const MonitoringScopeTab: React.FC<MonitoringScopeTabProps> = ({
                                           return updated;
                                         });
                                         setConfirmDeleteCustomTaskId(null);
+                                        showToast("Custom task deleted");
                                       }}
                                       className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-[6px] text-[11px] font-bold transition-all cursor-pointer shadow-sm"
                                     >

@@ -48,10 +48,16 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
 
   // Synchronize and Load all tables from Supabase
-  const loadConsoleData = async () => {
-    setLoading(true);
+  const loadConsoleData = async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const [
@@ -102,7 +108,7 @@ export default function App() {
           name: client.company_name || "",
           company: client.company_name || "",
           sector: client.industry || "",
-          status: "active" as const,
+          status: (client.status === 'suspended' ? 'suspended' : 'active') as ('active' | 'suspended'),
           email: matchedUsers[0]?.email || `${(client.company_name || "client").toLowerCase().replace(/\s/g, '')}@example.com`,
           joinedDate: client.created_at ? client.created_at.split("T")[0] : new Date().toISOString().split("T")[0],
           apiCallsCount: 0,
@@ -208,10 +214,11 @@ export default function App() {
         await supabase.schema('admin').from("client_icp").insert([icpPayload]);
       }
       
-      loadConsoleData();
-    } catch (err) {
+      await loadConsoleData(true);
+      showToast("Client added successfully!");
+    } catch (err: any) {
       console.error("Error creating customer", err);
-      // could show an error toast 
+      showToast(err.message || "Error creating client", 'error');
     }
   };
 
@@ -223,6 +230,7 @@ export default function App() {
       if (updatedPayload.sector !== undefined) clientsUpdate.industry = updatedPayload.sector;
       if (updatedPayload.location !== undefined) clientsUpdate.location = updatedPayload.location;
       if (updatedPayload.description !== undefined) clientsUpdate.client_description = updatedPayload.description;
+      if (updatedPayload.status !== undefined) clientsUpdate.status = updatedPayload.status;
 
       if (Object.keys(clientsUpdate).length > 0) {
         await supabase.schema('admin').from("clients").update(clientsUpdate).eq("id", id);
@@ -311,9 +319,11 @@ export default function App() {
         }
       }
       
-      loadConsoleData();
-    } catch (err) {
+      loadConsoleData(true).catch(console.error);
+      showToast("Changes saved successfully!");
+    } catch (err: any) {
       console.error("Error updating customer profile", err);
+      showToast(err.message || "Error updating client", 'error');
     }
   };
 
@@ -322,9 +332,11 @@ export default function App() {
       await supabase.schema('admin').from("client_icp").delete().eq("client_id", id);
       await supabase.schema('admin').from("client_users").delete().eq("client_id", id);
       await supabase.schema('admin').from("clients").delete().eq("id", id);
-      loadConsoleData();
-    } catch (err) {
+      await loadConsoleData(true);
+      showToast("Client deleted successfully!");
+    } catch (err: any) {
       console.error("Error deleting customer", err);
+      showToast(err.message || "Error deleting client", 'error');
     }
   };
 
@@ -334,8 +346,10 @@ export default function App() {
     try {
       // Mocking set since no remote DB table for settings 
       setSettings(updatedSettingsPayload);
-    } catch (err) {
+      showToast("Settings saved successfully!");
+    } catch (err: any) {
       console.error("Error saving global system parameters", err);
+      showToast(err.message || "Error saving settings", 'error');
     } finally {
       setSavingSettings(false);
     }
@@ -344,6 +358,18 @@ export default function App() {
   return (
     <div className="h-screen bg-[#f9fafb] text-slate-800 flex font-sans selection:bg-indigo-100 selection:text-indigo-950 overflow-hidden">
       
+      {/* Global Toast */}
+      {toast && (
+        <div 
+          className={`fixed top-4 right-4 z-[100] px-4 py-3 rounded-[6px] shadow-lg flex items-center gap-2 animate-in slide-in-from-right-4 fade-in duration-300 ${
+            toast.type === 'success' ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'
+          }`}
+        >
+          {toast.type === 'success' ? <CheckCircle2 className="h-4 w-4" /> : <ShieldAlert className="h-4 w-4" />}
+          <span className="text-xs font-bold">{toast.message}</span>
+        </div>
+      )}
+
       {/* 1. Left Vertical Sidebar (Image 2 format) - static, non-scrolling */}
       <aside className="w-[56px] bg-white border-r border-[#e2e8f0] flex flex-col justify-between items-center py-4 shrink-0 select-none h-full">
         
@@ -595,6 +621,7 @@ export default function App() {
                   onAddCustomer={handleAddCustomer}
                   onUpdateCustomer={handleUpdateCustomer}
                   onDeleteCustomer={handleDeleteCustomer}
+                  showToast={showToast}
                 />
               )}
 
@@ -602,6 +629,7 @@ export default function App() {
                 <PromptsTab
                   prompts={prompts}
                   customers={customers}
+                  showToast={showToast}
                 />
               )}
 
@@ -616,6 +644,7 @@ export default function App() {
                   settings={settings}
                   onSaveSettings={handleSaveSettings}
                   saving={savingSettings}
+                  showToast={showToast}
                 />
               )}
 

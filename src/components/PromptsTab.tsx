@@ -8,11 +8,13 @@ import { PromptTemplate, Customer, ActivityLog } from "../types";
 interface PromptsTabProps {
   prompts: PromptTemplate[];
   customers: Customer[];
+  showToast: (message: string, type?: 'success' | 'error') => void;
 }
 
 export default function PromptsTab({
   prompts,
-  customers
+  customers,
+  showToast
 }: PromptsTabProps) {
   return (
     <div className="p-6">

@@ -45,13 +45,22 @@ const CATEGORY_ICONS = [
   Globe, Users, UserCheck, TrendingUp, FileText, Calendar, Layers
 ];
 
+let cachedModules: IntelligenceModule[] | null = null;
+let cachedPromise: Promise<IntelligenceModule[]> | null = null;
+
 export function useIntelligenceModules() {
-  const [modules, setModules] = useState<IntelligenceModule[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [modules, setModules] = useState<IntelligenceModule[]>(cachedModules || []);
+  const [loading, setLoading] = useState(!cachedModules);
 
   useEffect(() => {
-    async function fetchModules() {
-      try {
+    if (cachedModules) {
+      setModules(cachedModules);
+      setLoading(false);
+      return;
+    }
+
+    if (!cachedPromise) {
+      cachedPromise = (async () => {
         const { data: dbModules, error: e1 } = await supabase.schema('admin').from('modules').select('*');
         if (e1) throw e1;
         const { data: dbSubmodules, error: e2 } = await supabase.schema('admin').from('submodules').select('*');
@@ -85,15 +94,19 @@ export function useIntelligenceModules() {
           };
         });
 
-        setModules(transformed);
-      } catch (e) {
-        console.error("Error fetching intelligence modules:", e);
-      } finally {
-        setLoading(false);
-      }
+        return transformed;
+      })();
     }
 
-    fetchModules();
+    cachedPromise.then((transformed) => {
+      cachedModules = transformed;
+      setModules(transformed);
+      setLoading(false);
+    }).catch(e => {
+      console.error("Error fetching intelligence modules:", e);
+      cachedPromise = null;
+      setLoading(false);
+    });
   }, []);
 
   return { modules, loading };

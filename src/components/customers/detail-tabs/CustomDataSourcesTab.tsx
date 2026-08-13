@@ -20,10 +20,12 @@ interface CustomDataSource {
 
 interface CustomDataSourcesTabProps {
   selectedClientId: string;
+  showToast: (message: string, type?: 'success' | 'error') => void;
 }
 
 export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
-  selectedClientId
+  selectedClientId,
+  showToast
 }) => {
   const [sources, setSources] = useState<CustomDataSource[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -145,9 +147,10 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
 
       // Refresh list
       fetchSources();
-    } catch (err) {
+      showToast("Data source added successfully");
+    } catch (err: any) {
       console.error("Error adding source:", err);
-      alert("Failed to add data source. Please try again.");
+      showToast(err.message || "Failed to add data source", 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -188,8 +191,10 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
 
       setConfirmDeleteId(null);
       fetchSources();
-    } catch (err) {
+      showToast("Data source deleted");
+    } catch (err: any) {
       console.error("Error deleting source:", err);
+      showToast(err.message || "Failed to delete source", 'error');
     }
   };
 
@@ -211,15 +216,15 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
       // source row every few seconds until last_run_at changes, so the
       // button can flip to a green tick (or error icon) once it's done.
       pollForCompletion(id);
-
-    } catch (err) {
+      showToast("Pipeline job started successfully");
+    } catch (err: any) {
       console.error("Error triggering run:", err);
       setRunningIds(prev => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
-      alert("Failed to start the run. Please check the pipeline server and try again.");
+      showToast(err.message || "Failed to start the run", 'error');
     }
   };
 

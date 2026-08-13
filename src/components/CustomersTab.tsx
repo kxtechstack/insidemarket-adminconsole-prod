@@ -26,12 +26,14 @@ import {
   Plug,
   Pause,
   RotateCcw,
-  Users
+  Users,
+  Loader2
 } from "lucide-react";
 import { Customer, CustomTask } from "../types";
 import { supabase } from "../lib/supabase";
 import { useIntelligenceModules } from "../data/intelligenceModules";
 import { COLLECTION_PROMPTS } from "../data/prompts";
+import ClientDetailView from "./ClientDetailView";
 import { 
   CustomerList, 
   OnboardModal, 
@@ -48,13 +50,15 @@ interface CustomersTabProps {
   onAddCustomer: (customer: Omit<Customer, 'id' | 'joinedDate' | 'apiCallsCount'>) => Promise<void>;
   onUpdateCustomer: (id: string, customer: Partial<Customer>) => Promise<void>;
   onDeleteCustomer: (id: string) => Promise<void>;
+  showToast: (message: string, type?: 'success' | 'error') => void;
 }
 
 export default function CustomersTab({ 
   customers, 
   onAddCustomer, 
   onUpdateCustomer, 
-  onDeleteCustomer 
+  onDeleteCustomer,
+  showToast
 }: CustomersTabProps) {
   
   const { modules: INTELLIGENCE_MODULES } = useIntelligenceModules();
@@ -68,7 +72,6 @@ export default function CustomersTab({
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 5;
-  const [activeDetailTab, setActiveDetailTab] = useState<'basic' | 'scope' | 'collection' | 'rules' | 'datasources'>('basic');
 
   // Reset page when search query changes
   useEffect(() => {
@@ -108,6 +111,9 @@ export default function CustomersTab({
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set([]));
   const [enabledModules, setEnabledModules] = useState<Record<string, boolean>>({});
   const [selectedSignals, setSelectedSignals] = useState<Record<string, string[]>>({});
+  const [persistedSignals, setPersistedSignals] = useState<Record<string, string[]>>({});
+  const [isLoadingClientDetail, setIsLoadingClientDetail] = useState(false);
+  const [persistedBasicInfo, setPersistedBasicInfo] = useState<Record<string, any>>({});
 
   useEffect(() => {
     if (INTELLIGENCE_MODULES && INTELLIGENCE_MODULES.length > 0) {
@@ -119,53 +125,6 @@ export default function CustomersTab({
       }
     }
   }, [INTELLIGENCE_MODULES, activeModuleId]);
-
-  // Custom Tasks states
-  const [customTasks, setCustomTasks] = useState<Record<string, CustomTask[]>>({});
-  const [selectedCustomSignals, setSelectedCustomSignals] = useState<Record<string, string[]>>({});
-  const [showAddCustomTaskModal, setShowAddCustomTaskModal] = useState(false);
-  const [newCustomTaskName, setNewCustomTaskName] = useState("");
-  const [newCustomSubTasks, setNewCustomSubTasks] = useState<string[]>([""]);
-  const [newCustomTaskScope, setNewCustomTaskScope] = useState<"shared" | "private">("private");
-  const [newCustomSignalType, setNewCustomSignalType] = useState("tender_rfp");
-  const [newCustomPrimarySource, setNewCustomPrimarySource] = useState("exa");
-  const [newCustomSearchPrompt, setNewCustomSearchPrompt] = useState("Government or corporate RFPs for {{tender_scope}} in {{geography}}. Return full document content. Timeframe: {{timeframe}}.");
-  const [newCustomModel, setNewCustomModel] = useState("sonar-pro");
-  const [newCustomMaxResults, setNewCustomMaxResults] = useState("20");
-  const [newCustomMinScore, setNewCustomMinScore] = useState("");
-  const [newCustomFrequency, setNewCustomFrequency] = useState("Daily");
-  const [newCustomRunTime, setNewCustomRunTime] = useState("02:00");
-  const [newCustomActive, setNewCustomActive] = useState(true);
-
-  // Collection prompt interactive custom state management
-  const [customPrompts, setCustomPrompts] = useState<Record<string, Record<string, { content: string; lastEdited: string }>>>({});
-  const [editingModuleIdState, setEditingModuleIdState] = useState<string | null>(null);
-  const [editPromptValue, setEditPromptValue] = useState<string>("");
-  const [confirmDeleteModuleId, setConfirmDeleteModuleId] = useState<string | null>(null);
-  const [confirmDeleteCustomTaskId, setConfirmDeleteCustomTaskId] = useState<string | null>(null);
-  const [showHistoryModuleId, setShowHistoryModuleId] = useState<string | null>(null);
-  const [moduleSchedules, setModuleSchedules] = useState<Record<string, Record<string, { frequency: string; time: string; lastRun: string; tool: string }>>>({});
-  const [tempSchedule, setTempSchedule] = useState<{ tool: string; frequency: string; time: string } | null>(null);
-  const [pausedModules, setPausedModules] = useState<Record<string, Record<string, boolean>>>({});
-  const [runningModuleId, setRunningModuleId] = useState<string | null>(null);
-  const [moduleLastRan, setModuleLastRan] = useState<Record<string, Record<string, string>>>({});
-
-  // Access Details table state
-  const [accessUsers, setAccessUsers] = useState<any[]>([]);
-  const [editingRowId, setEditingRowId] = useState<string | null>(null);
-  const [isSavingRow, setIsSavingRow] = useState(false);
-  const [rowError, setRowError] = useState<string | null>(null);
-  
-  // Row inline editing input states
-  const [editFirstName, setEditFirstName] = useState("");
-  const [editLastName, setEditLastName] = useState("");
-  const [editDesignation, setEditDesignation] = useState("");
-  const [editEmail, setEditEmail] = useState("");
-  const [editLastActive, setEditLastActive] = useState("");
-  
-  // Notice for copy/reset
-  const [resetNotice, setResetNotice] = useState<string | null>(null);
-  const [resetNoticeEmail, setResetNoticeEmail] = useState<string | null>(null);
 
   // Target customer payload for new customer onboarding
   const [newCustName, setNewCustName] = useState("");
@@ -222,186 +181,14 @@ export default function CustomersTab({
     if (!selectedClientId) return;
     const client = customers.find(c => c.id === selectedClientId);
     if (client) {
-      setPrimaryGeographies(client.promptVariables?.geographicScope || client.primaryGeographies || "IN, SG, MY");
-      setFocusProducts(client.promptVariables?.focusProducts || "market research, consulting, fintech, logistics");
-      setCoreSectors(client.coreSectors || "market research, consulting, fintech, logistics");
-      setSectorsToAvoid(client.sectorsToAvoid || "aerospace, defence");
-      setKnownCompetitors(client.promptVariables?.competitors || client.knownCompetitors || "Frost & Sullivan, IDC, Gartner");
-      setDealSizeMin(client.dealSizeMin ?? 50000);
-      setDealSizeMax(client.dealSizeMax ?? 500000);
-      
-      setTargetAccounts(client.targetAccounts || "Zetwerk, NovaPay, Delhivery");
-      setExistingRelationships(client.existingRelationships || "");
-      setBlacklistCompanies(client.blacklistCompanies || "Competitor clients, conflicted companies");
-      setKeyContacts(client.keyContacts || "");
-      setPipelineStatus(client.pipelineStatus || "available — normal scoring");
-      setSectorsToEnter(client.sectorsToEnter || "");
-      setDesignations(client.designations || "");
-
       setEditCompany(client.company || "");
       setEditSector(client.sector || "");
-      setEditLocation(client.location || getClientMeta(client).location || "");
+      setEditLocation(client.location || "");
       setDescription(client.description || "");
-
-      // Initialize based on database values immediately
-      const syncMonitoringState = async () => {
-        const { data: dbClientSignals } = await supabase.schema('admin')
-          .from('client_signals')
-          .select('signal_id, signals(submodule_id)')
-          .eq('client_id', selectedClientId);
-        
-        // Cache next signals to ensure we only apply fallback if db is truly empty
-        let nextSelectedSignals: Record<string, string[]> = {};
-        if (dbClientSignals && dbClientSignals.length > 0) {
-          dbClientSignals.forEach((cs: any) => {
-            const sig = cs.signals;
-            if (sig && sig.submodule_id) {
-              if (!nextSelectedSignals[sig.submodule_id]) nextSelectedSignals[sig.submodule_id] = [];
-              nextSelectedSignals[sig.submodule_id].push(cs.signal_id);
-            }
-          });
-          setSelectedSignals(nextSelectedSignals);
-        }
-
-        const { data: dbCustomTasks } = await supabase.schema('admin')
-          .from('custom_tasks')
-          .select('*, custom_task_subtasks(*)')
-          .eq('client_id', selectedClientId);
-        
-        let loadedCustomTasks = false;
-        if (dbCustomTasks && dbCustomTasks.length > 0) {
-          loadedCustomTasks = true;
-          const parsedCustomTasks = dbCustomTasks.map((task: any) => ({
-            id: task.id,
-            name: task.name,
-            subTasks: task.custom_task_subtasks || []
-          }));
-          
-          setCustomTasks(prev => ({
-            ...prev,
-            [selectedClientId]: parsedCustomTasks
-          }));
-
-          const initialCustomSignals: Record<string, string[]> = {};
-          dbCustomTasks.forEach((task: any) => {
-            const selectedIds = (task.custom_task_subtasks || [])
-              .filter((st: any) => st.is_selected)
-              .map((st: any) => st.id);
-            if (selectedIds.length > 0) {
-              initialCustomSignals[task.id] = selectedIds;
-            }
-          });
-          setSelectedCustomSignals(initialCustomSignals);
-        }
-
-        // Apply fallback logic only after async checks
-        const mConfig = client.monitoringConfig || { enabledModules: ["md", "fo", "cr"], selectedSignals: {} };
-        const enabledMap: Record<string, boolean> = {};
-        (mConfig.enabledModules || []).forEach(id => enabledMap[id] = true);
-        if (enabledMap['custom_tasks'] === undefined) {
-          enabledMap['custom_tasks'] = true;
-        }
-        setEnabledModules(enabledMap);
-        
-        // If no signals in db, use config signals
-        if (Object.keys(nextSelectedSignals).length === 0) {
-          setSelectedSignals(mConfig.selectedSignals || {});
-        }
-
-        // If no custom tasks in db, use config tasks
-        if (!loadedCustomTasks) {
-          const defaultTasks = [
-            {
-              id: "ct-1",
-              name: "Milestone Compliance & Local Licenses",
-              subTasks: [
-                "Review regulatory filing calendars",
-                "Validate pollution control board consent NOCs",
-                "Confirm municipal trade license renewals"
-              ]
-            },
-            {
-              id: "ct-2",
-              name: "Ad-hoc Expansion Readiness Check",
-              subTasks: [
-                "Track corporate real estate lease sign-offs",
-                "Inspect local workforce search activity",
-                "Monitor regional warehouse infrastructure logs"
-              ]
-            }
-          ];
-          const savedTasks = mConfig.customTasks || defaultTasks;
-          setCustomTasks(prev => ({
-            ...prev,
-            [client.id]: savedTasks
-          }));
-          const defaultCustomSignalsSelected = {
-            "ct-1": ["Review regulatory filing calendars", "Validate pollution control board consent NOCs", "Confirm municipal trade license renewals"],
-            "ct-2": ["Track corporate real estate lease sign-offs", "Inspect local workforce search activity", "Monitor regional warehouse infrastructure logs"]
-          };
-          setSelectedCustomSignals(mConfig.selectedCustomSignals || defaultCustomSignalsSelected);
-        }
-      };
-
-      syncMonitoringState();
-
-      setActiveModuleId(INTELLIGENCE_MODULES.length > 0 ? INTELLIGENCE_MODULES[0].id : "");
-      setExpandedCategories(new Set(INTELLIGENCE_MODULES.length > 0 && INTELLIGENCE_MODULES[0].categories.length > 0 ? [INTELLIGENCE_MODULES[0].categories[0].id] : []));
-      
-      const initGeoWeights = client.geographyWeights || { IN: 1.0, SG: 0.8, MY: 0.7 };
-      const initSectorWeights = client.sectorWeights || { "market research": 0.9, consulting: 0.85, fintech: 0.8, logistics: 0.75 };
-      setGeoWeights(initGeoWeights);
-      setSectorWeights(initSectorWeights);
-
-      // Load keyContacts JSON or set defaults
-      let rawContacts = client.keyContacts || "";
-      let parsed: any[] = [];
-      let isInitialized = false;
-      try {
-        if (rawContacts && rawContacts.startsWith("[")) {
-          parsed = JSON.parse(rawContacts);
-          isInitialized = true;
-        }
-      } catch (e) {
-        console.error("Failed to parse keyContacts json", e);
-      }
-
-      if (!isInitialized && parsed.length === 0) {
-        if (client.id === 'cust-5' || client.company.includes("Research")) {
-          parsed = [
-            { id: "u-1", firstName: "Sarah", lastName: "Jenkins", designation: "Senior Analyst", email: "s.jenkins@researchinsights.co", lastActive: "2026-06-03 10:15", active: true },
-            { id: "u-2", firstName: "David", lastName: "Vance", designation: "Research Director", email: "d.vance@researchinsights.co", lastActive: "2026-06-02 16:40", active: true },
-            { id: "u-3", firstName: "Priya", lastName: "Patel", designation: "Operations Lead", email: "p.patel@researchinsights.co", lastActive: "2026-06-03 11:02", active: true }
-          ];
-        } else if (client.id === 'cust-1' || client.company.includes("Atherton")) {
-          parsed = [
-            { id: "u-1", firstName: "John", lastName: "Doe", designation: "Operations Manager", email: "j.doe@atherton.com", lastActive: "2026-06-02 18:15", active: true },
-            { id: "u-2", firstName: "Robert", lastName: "Chen", designation: "Technical Lead", email: "r.chen@atherton.com", lastActive: "2026-06-01 09:30", active: false }
-          ];
-        } else if (client.id === 'cust-2' || client.company.includes("BioSphere")) {
-          parsed = [
-            { id: "u-1", firstName: "Alan", lastName: "Turing", designation: "Bioinformatics Scientist", email: "a.turing@biosphere.io", lastActive: "2026-06-01 11:20", active: true },
-            { id: "u-2", firstName: "Clara", lastName: "Oswald", designation: "Research Engineer", email: "c.oswald@biosphere.io", lastActive: "2026-05-30 14:15", active: true }
-          ];
-        } else if (client.id === 'cust-3' || client.company.includes("Vantage")) {
-          parsed = [
-            { id: "u-1", firstName: "Marcus", lastName: "Aurelius", designation: "Quantitative Analyst", email: "m.aurelius@vantagequant.com", lastActive: "2026-06-03 05:30", active: true },
-            { id: "u-2", firstName: "Seneca", lastName: "Miller", designation: "Portfolio Manager", email: "s.miller@vantagequant.com", lastActive: "2026-06-02 15:45", active: true }
-          ];
-        } else if (client.id === 'cust-4' || client.company.includes("Aether Grid") || client.company.includes("Renewables")) {
-          parsed = [
-            { id: "u-1", firstName: "Nikola", lastName: "Tesla", designation: "Power Grid Specialist", email: "n.tesla@aethergrid.net", lastActive: "2026-05-28 14:02", active: false }
-          ];
-        } else {
-          parsed = [];
-        }
-      }
-      setAccessUsers(parsed);
-      setEditingRowId(null);
     }
   }, [selectedClientId, customers]);
 
-  // Parse list values to construct sliders
+  // Parsing helpers
   const parsedGeos = primaryGeographies
     ? primaryGeographies.split(",").map(g => g.trim()).filter(Boolean)
     : [];
@@ -444,85 +231,6 @@ export default function CustomersTab({
   };
 
   const completeness = calculateCompleteness();
-
-  const handleSaveProfile = async () => {
-    if (!selectedClientId) return;
-    
-    const client = customers.find(c => c.id === selectedClientId);
-    if (!client) return;
-
-    const payload: Partial<Customer> = {
-      company: editCompany,
-      sector: editSector,
-      location: editLocation,
-      description: description,
-      promptVariables: {
-        ...client.promptVariables,
-        geographicScope: primaryGeographies,
-        focusProducts: focusProducts,
-        competitors: knownCompetitors,
-      },
-      coreSectors,
-      sectorsToAvoid,
-      dealSizeMin,
-      dealSizeMax,
-      geographyWeights: geoWeights,
-      sectorWeights,
-      targetAccounts,
-      existingRelationships,
-      blacklistCompanies,
-      keyContacts: JSON.stringify(accessUsers),
-      pipelineStatus,
-      sectorsToEnter,
-      designations,
-      monitoringConfig: {
-        enabledModules: Object.keys(enabledModules).filter(id => enabledModules[id]),
-        selectedSignals,
-        customTasks: customTasks[selectedClientId] || [],
-        selectedCustomSignals: selectedCustomSignals
-      }
-    };
-
-    await onUpdateCustomer(selectedClientId, payload);
-  };
-
-  const handleSaveConfiguration = async () => {
-    if (!selectedClientId) return;
-
-    // Get all selected signal IDs from selectedSignals state
-    // Delete all existing client_signals for this client first
-    await supabase.schema('admin')
-      .from('client_signals')
-      .delete()
-      .eq('client_id', selectedClientId);
-    
-    // Then insert all currently selected signals
-    const allSelectedSignalIds = Object.values(selectedSignals).flat();
-    if (allSelectedSignalIds.length > 0) {
-      await supabase.schema('admin')
-        .from('client_signals')
-        .insert(allSelectedSignalIds.map(signalId => ({
-          client_id: selectedClientId,
-          signal_id: signalId
-        })));
-    }
-
-    // Persist custom tasks selection state
-    const currentClientCustomTasks = customTasks[selectedClientId] || [];
-    for (const task of currentClientCustomTasks) {
-      for (const sub of task.subTasks) {
-        if (sub.id) {
-          const isSelected = selectedCustomSignals[task.id]?.includes(sub.id) || false;
-          await supabase.schema('admin').from('custom_task_subtasks')
-            .update({ is_selected: isSelected })
-            .eq('id', sub.id);
-        }
-      }
-    }
-
-    // Call the original profile save mechanism logic to preserve other data updates
-    await handleSaveProfile();
-  };
 
   const handleStartEditRow = (u: any) => {
     setEditingRowId(u.id);
@@ -755,181 +463,16 @@ export default function CustomersTab({
     <div className="flex flex-col min-h-full font-sans">
       <div className="p-6 space-y-4 flex-1">
         {detailClientId && activeClientInModal ? (
-          <>
-          {/* Client Details Page replacing the table */}
-          <div className="bg-white border border-[#e2e8f0] p-3 flex flex-col" style={{ borderRadius: "6px" }}>
-          
-          {/* Header section with back navigation and Client name */}
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-[#e2e8f0] pb-3 mb-4 gap-2 bg-white">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setDetailClientId(null)}
-                className="inline-flex items-center justify-center p-2 text-slate-600 hover:text-[#0066cc] hover:bg-slate-55 border border-[#e2e8f0] transition-all rounded-[6px] cursor-pointer"
-                title="Back to Clients"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-              <div>
-                <h2 className="text-[16px] font-bold text-[#1e293b] tracking-tight">{activeClientInModal.company}</h2>
-                <p className="text-[11px] text-slate-700 font-medium mt-0.5">{activeClientInModal.sector} • {getClientMeta(activeClientInModal).location}</p>
-              </div>
-            </div>
-            <span className="text-[11px] text-slate-700 font-medium">
-              Enterprise monitoring configuration profile
-            </span>
-          </div>
-
-          {/* Clean tabs selection conforming precisely to description and image format */}
-          <div className="border-[#e2e8f0] border-b mb-4">
-            <div className="flex space-x-4 sm:space-x-6 overflow-x-auto scrollbar-none">
-              {[
-                { id: "basic", label: "Basic Information" },
-                { id: "scope", label: "Monitoring Scope" },
-                { id: "collection", label: "Data Collection" },
-                { id: "rules", label: "Intelligence Rules" },
-                { id: "datasources", label: "Custom Data Sources" }
-              ].map((tab) => {
-                const isActive = activeDetailTab === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    onClick={() => setActiveDetailTab(tab.id as any)}
-                    className={`pb-2 text-[13px] font-medium transition-all relative cursor-pointer whitespace-nowrap ${
-                      isActive 
-                        ? "text-black font-semibold" 
-                        : "text-slate-500 hover:text-slate-850"
-                    }`}
-                  >
-                    {tab.label}
-                    {isActive && (
-                      <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-black" />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Wrapper for scrollable tabs content - flex-1 to fill */}
-          <div className="flex-1 overflow-y-auto py-0">
-            {activeDetailTab === 'basic' && (() => {
-              const selectedClient = customers.find(c => c.id === selectedClientId);
-              console.log("Selected Client details arriving from Supabase:", {
-                focus_products_services: selectedClient?.promptVariables?.focusProducts,
-                core_sectors: selectedClient?.coreSectors
-              });
-              return (
-                <BasicInfoTab
-                  editCompany={editCompany}
-                  setEditCompany={setEditCompany}
-                  editSector={editSector}
-                  setEditSector={setEditSector}
-                  editLocation={editLocation}
-                  setEditLocation={setEditLocation}
-                  description={description}
-                  setDescription={setDescription}
-                  coreSectors={coreSectors}
-                  setCoreSectors={setCoreSectors}
-                  focusProducts={focusProducts}
-                  setFocusProducts={setFocusProducts}
-                  knownCompetitors={knownCompetitors}
-                  setKnownCompetitors={setKnownCompetitors}
-                  primaryGeographies={primaryGeographies}
-                  setPrimaryGeographies={setPrimaryGeographies}
-                  sectorsToAvoid={sectorsToAvoid}
-                  setSectorsToAvoid={setSectorsToAvoid}
-                  designations={designations}
-                  setDesignations={setDesignations}
-                  accessUsers={accessUsers}
-                  handleAddAccessUser={handleAddAccessUser}
-                  resetNotice={resetNotice}
-                  setResetNotice={setResetNotice}
-                  editingRowId={editingRowId}
-                  isSavingRow={isSavingRow}
-                  rowError={rowError}
-                  editFirstName={editFirstName}
-                  setEditFirstName={setEditFirstName}
-                  editLastName={editLastName}
-                  setEditLastName={setEditLastName}
-                  editDesignation={editDesignation}
-                  setEditDesignation={setEditDesignation}
-                  editEmail={editEmail}
-                  setEditEmail={setEditEmail}
-                  handleToggleUserActive={handleToggleUserActive}
-                  handleSaveEditRow={handleSaveEditRow}
-                  handleCancelEditRow={handleCancelEditRow}
-                  handleStartEditRow={handleStartEditRow}
-                  handlePasswordReset={handlePasswordReset}
-                  handleDeleteUser={handleDeleteUser}
-                />
-              );
-            })()}
-            {activeDetailTab === 'scope' && (
-              <MonitoringScopeTab 
-                selectedClientId={selectedClientId}
-                activeModuleId={activeModuleId}
-                setActiveModuleId={setActiveModuleId}
-                enabledModules={enabledModules}
-                setEnabledModules={setEnabledModules}
-                customTasks={customTasks}
-                selectedCustomSignals={selectedCustomSignals}
-                selectedSignals={selectedSignals}
-                setSelectedCustomSignals={setSelectedCustomSignals}
-                setSelectedSignals={setSelectedSignals}
-                expandedCategories={expandedCategories}
-                setExpandedCategories={setExpandedCategories}
-                confirmDeleteCustomTaskId={confirmDeleteCustomTaskId}
-                setConfirmDeleteCustomTaskId={setConfirmDeleteCustomTaskId}
-                setCustomTasks={setCustomTasks}
-              />
-            )}
-            {activeDetailTab === 'collection' && (
-              <DataCollectionTab
-                selectedClientId={selectedClientId}
-                activeModuleId={activeModuleId}
-                setActiveModuleId={setActiveModuleId}
-                enabledModules={enabledModules}
-                customTasks={customTasks}
-                selectedCustomSignals={selectedCustomSignals}
-                selectedSignals={selectedSignals}
-                editCompany={editCompany}
-                editSector={editSector}
-                customPrompts={customPrompts}
-                setCustomPrompts={setCustomPrompts}
-                editingModuleIdState={editingModuleIdState}
-                setEditingModuleIdState={setEditingModuleIdState}
-                editPromptValue={editPromptValue}
-                setEditPromptValue={setEditPromptValue}
-                pausedModules={pausedModules}
-                setPausedModules={setPausedModules}
-                runningModuleId={runningModuleId}
-                setRunningModuleId={setRunningModuleId}
-                moduleLastRan={moduleLastRan}
-                setModuleLastRan={setModuleLastRan}
-                showHistoryModuleId={showHistoryModuleId}
-                setShowHistoryModuleId={setShowHistoryModuleId}
-                tempSchedule={tempSchedule}
-                setTempSchedule={setTempSchedule}
-                moduleSchedules={moduleSchedules}
-                setModuleSchedules={setModuleSchedules}
-                confirmDeleteModuleId={confirmDeleteModuleId}
-                setConfirmDeleteModuleId={setConfirmDeleteModuleId}
-                setActiveDetailTab={setActiveDetailTab}
-              />
-            )}
-            {activeDetailTab === 'rules' && (
-              <IntelligenceRulesTab />
-            )}
-            {activeDetailTab === 'datasources' && (
-              <CustomDataSourcesTab
-                selectedClientId={selectedClientId}
-              />
-            )}
-              </div>
-            </div>
-
-            {/* removed global save footer from here */}
-          </>
+          <ClientDetailView 
+            key={selectedClientId}
+            selectedClientId={selectedClientId}
+            activeClient={activeClientInModal}
+            onUpdateCustomer={onUpdateCustomer}
+            showToast={showToast}
+            onBack={() => setDetailClientId(null)}
+            customers={customers}
+            INTELLIGENCE_MODULES={INTELLIGENCE_MODULES}
+          />
         ) : (
           /* 1. Primary View: Pristine Client Lists Table */
           <div className="bg-white border border-[#e2e8f0] overflow-hidden" style={{ borderRadius: "6px" }}>
@@ -1000,9 +543,9 @@ export default function CustomersTab({
                       {paginatedCustomers.map((c) => {
                         const meta = getClientMeta(c);
                         return (
-                          <tr key={c.id} className="hover:bg-indigo-50/20 transition-all group duration-150">
+                          <tr key={c.id} className={`hover:bg-indigo-50/20 transition-all group duration-150 ${c.status === 'suspended' ? 'opacity-60' : ''}`}>
                             <td className="py-1.5 px-5 font-semibold text-slate-900 text-xs">
-                              <span className="select-text">{c.company}</span>
+                              <span className={`select-text ${c.status === 'suspended' ? 'cursor-not-allowed' : ''}`}>{c.company}</span>
                             </td>
                             <td className="py-1.5 px-5 text-xs text-slate-600">
                               <span className="select-text">{c.sector}</span>
@@ -1226,239 +769,9 @@ export default function CustomersTab({
         </div>
       )}
 
-      {showAddCustomTaskModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="relative bg-white w-full max-w-[468px] border border-gray-200 shadow-2xl overflow-hidden my-8 animate-in zoom-in-95 duration-200" style={{ borderRadius: "12px" }}>
-            
-            {/* Header */}
-            <div className="flex items-center justify-between px-6 py-4.5 border-b border-gray-100">
-              <h3 className="text-[17px] font-bold text-gray-900 tracking-tight">New Custom Task</h3>
-              <button 
-                type="button"
-                onClick={() => {
-                  setShowAddCustomTaskModal(false);
-                  setNewCustomTaskName("");
-                  setNewCustomSubTasks([""]);
-                }}
-                className="text-gray-400 hover:text-gray-650 p-1.5 border border-gray-200 hover:bg-gray-50 transition-all cursor-pointer rounded-lg"
-              >
-                <X className="h-4.5 w-4.5 stroke-[2.5]" />
-              </button>
-            </div>
-
-            {/* Input Form */}
-            <form 
-              onSubmit={async (e) => {
-                e.preventDefault();
-                if (!newCustomTaskName.trim() || !selectedClientId) return;
-                const filteredSubTasks = newCustomSubTasks.map(st => st.trim()).filter(Boolean);
-                if (filteredSubTasks.length === 0) return;
-
-                const { data: dbTask, error: taskError } = await supabase.schema('admin')
-                  .from('custom_tasks')
-                  .insert({ client_id: selectedClientId, name: newCustomTaskName.trim() })
-                  .select()
-                  .single();
-
-                if (taskError || !dbTask) {
-                  console.error("Failed to insert custom task", taskError);
-                  return;
-                }
-
-                const { data: dbSubTasks } = await supabase.schema('admin')
-                  .from('custom_task_subtasks')
-                  .insert(
-                    filteredSubTasks.map(st => ({
-                      custom_task_id: dbTask.id,
-                      name: st,
-                      is_selected: true
-                    }))
-                  )
-                  .select();
-
-                const newTask = {
-                  id: dbTask.id,
-                  name: dbTask.name,
-                  subTasks: dbSubTasks || []
-                };
-
-                const updatedTasks = [...(customTasks[selectedClientId] || []), newTask];
-
-                // Update customTasks state for the client
-                setCustomTasks(prev => ({
-                  ...prev,
-                  [selectedClientId]: updatedTasks
-                }));
-
-                const automaticallySelectedIds = (dbSubTasks || []).map((sub: any) => sub.id);
-
-                // Auto-select all subtasks for this task
-                setSelectedCustomSignals(prev => ({
-                  ...prev,
-                  [dbTask.id]: automaticallySelectedIds
-                }));
-
-                // Auto open category
-                setExpandedCategories(prev => {
-                  const next = new Set(prev);
-                  next.add(dbTask.id);
-                  return next;
-                });
-
-                // Auto switch active view to custom tasks
-                setActiveModuleId("custom_tasks");
-
-                // Close modal and reset fields
-                setShowAddCustomTaskModal(false);
-                setNewCustomTaskName("");
-                setNewCustomSubTasks([""]);
-              }} 
-              className="p-6 space-y-6 max-h-[75vh] overflow-y-auto"
-            >
-              
-              {/* SECTION: TASK IDENTITY */}
-              <div className="space-y-4">
-                <div className="border-b border-gray-100 pb-1">
-                  <h4 className="text-[10px] font-bold text-gray-400 tracking-widest">Task Identity</h4>
-                </div>
-                
-                {/* Task Name */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-gray-750">
-                    Task name <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    required
-                    type="text"
-                    placeholder="e.g. Competitor funding signals"
-                    value={newCustomTaskName}
-                    onChange={(e) => setNewCustomTaskName(e.target.value)}
-                    className="w-full px-3 py-2 text-xs bg-white border border-gray-200 text-gray-900 rounded-[6px] focus:outline-none focus:border-[#4f46e5] focus:ring-2 focus:ring-[#e0e7ff] placeholder-slate-400 font-medium transition-all"
-                  />
-                </div>
-              </div>
-
-              {/* SECTION: REQUIRED SIGNALS / SUB-TASKS */}
-              <div className="space-y-4">
-                <div className="border-b border-gray-100 pb-1 flex items-center justify-between">
-                  <h4 className="text-[10px] font-bold text-gray-400 tracking-widest">Required Signals</h4>
-                  <button
-                    type="button"
-                    onClick={() => setNewCustomSubTasks(prev => [...prev, ""])}
-                    className="text-[10.5px] text-[#4f46e5] font-bold hover:text-[#4338ca] transition-colors cursor-pointer flex items-center gap-1 bg-[#f5f3ff] px-2.5 py-1 rounded-md border border-indigo-100 animate-in fade-in"
-                  >
-                    <Plus className="h-3 w-3 stroke-[2.5]" /> Add Line
-                  </button>
-                </div>
-
-                <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
-                  {newCustomSubTasks.map((sub, index) => (
-                    <div key={index} className="flex gap-2 items-center animate-in slide-in-from-top-1 duration-150">
-                      <div className="text-[10px] font-mono text-slate-400 select-none w-5 text-right">{index + 1}.</div>
-                      <input
-                        required
-                        type="text"
-                        placeholder={`e.g. Sub-task / specific milestone ${index + 1}`}
-                        value={sub}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setNewCustomSubTasks(prev => {
-                            const copy = [...prev];
-                            copy[index] = val;
-                            return copy;
-                          });
-                        }}
-                        className="flex-1 px-3 py-2 text-xs bg-white border border-gray-200 text-gray-900 rounded-[6px] focus:outline-none focus:border-[#4f46e5] focus:ring-2 focus:ring-[#e0e7ff] placeholder-slate-400 font-medium transition-all"
-                      />
-                      {newCustomSubTasks.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setNewCustomSubTasks(prev => prev.filter((_, idx) => idx !== index));
-                          }}
-                          className="p-2 text-gray-400 hover:text-red-500 hover:bg-gray-50 rounded-lg cursor-pointer transition-colors"
-                          title="Remove Line"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Form Actions Footer */}
-              <div className="flex justify-end gap-3 pt-5 border-t border-gray-100">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowAddCustomTaskModal(false);
-                    setNewCustomTaskName("");
-                    setNewCustomSubTasks([""]);
-                  }}
-                  className="bg-white hover:bg-gray-50 text-gray-750 text-xs font-semibold px-4.5 py-2 border border-gray-200 cursor-pointer transition-colors"
-                  style={{ borderRadius: "8px" }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="bg-[#4f46e5] hover:bg-[#4338ca] text-white text-xs font-bold px-5 py-2 cursor-pointer transition-colors flex items-center gap-1.5 shadow-md active:scale-95"
-                  style={{ borderRadius: "8px" }}
-                >
-                  <Check className="h-3.5 w-3.5 stroke-[3]" /> Save task
-                </button>
-              </div>
-
-            </form>
-          </div>
-        </div>
-      )}
 
       </div>
 
-      {/* Global Save Action Footer (Sticky/Fixed outside the workpane area) */}
-      {(detailClientId && activeClientInModal && (activeDetailTab === 'basic' || activeDetailTab === 'scope' || activeDetailTab === 'collection')) && (
-        <div className="sticky bottom-0 z-30 p-4 pt-3 flex justify-end bg-white/40 backdrop-blur-md border-t border-gray-200">
-          <div className="flex items-center gap-3">
-          {activeDetailTab === 'basic' ? (
-            <button
-              type="button"
-              onClick={handleSaveProfile}
-              className="bg-black hover:bg-slate-800 text-white text-[11px] font-bold py-2 px-10 flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-lg"
-              style={{ borderRadius: "6px" }}
-            >
-              <Save className="h-4 w-4" /> Save Changes
-            </button>
-          ) : (
-            <div className="flex gap-3">
-              {activeDetailTab === 'scope' && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setNewCustomTaskName("");
-                    setNewCustomSubTasks([""]);
-                    setShowAddCustomTaskModal(true);
-                  }}
-                  className="bg-[#4f46e5] hover:bg-[#4338ca] text-white text-[11px] font-bold py-2 px-6 flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-lg"
-                  style={{ borderRadius: "6px" }}
-                >
-                  <Plus className="h-4 w-4" /> Add Custom Task
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={handleSaveConfiguration}
-                className="bg-black hover:bg-slate-800 text-white text-[11px] font-bold py-2 px-10 flex items-center gap-2 transition-all active:scale-95 cursor-pointer shadow-lg"
-                style={{ borderRadius: "6px" }}
-              >
-                <Check className="h-4 w-4" /> Save Configuration
-              </button>
-            </div>
-          )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

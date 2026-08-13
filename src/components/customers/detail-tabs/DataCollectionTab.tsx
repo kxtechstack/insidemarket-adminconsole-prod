@@ -52,9 +52,20 @@ interface DataCollectionTabProps {
   confirmDeleteModuleId: string | null;
   setConfirmDeleteModuleId: (id: string | null) => void;
   setActiveDetailTab: (tab: any) => void;
+  showToast: (message: string, type?: 'success' | 'error') => void;
 }
 
 import { supabase } from "../../../lib/supabase";
+
+const STAGE_LABELS: Record<string, string> = {
+  'fetching': 'Fetching Articles',
+  'after_url_check': 'Checking Duplicates',
+  'after_topic_dedup': 'Removing Similar Topics',
+  'after_quality_filter': 'Quality Check',
+  'pushed_to_processed': 'Classifying with AI',
+  'completed': 'Completed',
+  'failed': 'Failed'
+};
 
 export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
   selectedClientId,
@@ -86,7 +97,8 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
   setModuleSchedules,
   confirmDeleteModuleId,
   setConfirmDeleteModuleId,
-  setActiveDetailTab
+  setActiveDetailTab,
+  showToast
 }) => {
   const { modules: INTELLIGENCE_MODULES } = useIntelligenceModules();
   const [dbPrompts, setDbPrompts] = React.useState<any[]>([]);
@@ -168,9 +180,10 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       
       // Re-fetch to be absolutely sure
       await fetchDataSources();
+      showToast("Data source deleted");
     } catch (err: any) {
       console.error("[Delete] Catch error:", err);
-      alert(`Failed to delete source: ${err.message || 'Database error'}`);
+      showToast(err.message || "Failed to delete source", 'error');
     } finally {
       setIsDeletingDataSourceId(null);
     }
@@ -196,9 +209,10 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       setEditingDataSourceId(null);
       setEditDataSourceIdValue("");
       fetchDataSources();
+      showToast("Data source updated");
     } catch (err: any) {
       console.error("Error updating data source:", err);
-      alert(`Failed to update source: ${err.message || 'Unknown error'}`);
+      showToast(err.message || "Failed to update source", 'error');
     } finally {
       setIsSavingDataSource(false);
     }
@@ -227,9 +241,10 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       setNewDataSourceBadgeColor("indigo");
       setNewDataSourceId("");
       fetchDataSources();
-    } catch (err) {
+      showToast("Data source added successfully");
+    } catch (err: any) {
       console.error("Error saving data source:", err);
-      alert("Failed to save data source. Make sure the ID is unique.");
+      showToast(err.message || "Failed to save data source", 'error');
     } finally {
       setIsSavingDataSource(false);
     }
@@ -251,8 +266,13 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
 
   const fetchModulesAndSubmodules = async () => {
     try {
-      const { data: mData } = await supabase.schema('admin').from('modules').select('*').order('module_name');
-      const { data: sData } = await supabase.schema('admin').from('submodules').select('*').order('submodule_name');
+      const [
+        { data: mData },
+        { data: sData }
+      ] = await Promise.all([
+        supabase.schema('admin').from('modules').select('*').order('module_name'),
+        supabase.schema('admin').from('submodules').select('*').order('submodule_name')
+      ]);
       if (mData) setAllModulesList(mData);
       if (sData) setAllSubmodulesList(sData);
     } catch (err) {
@@ -377,7 +397,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
     }
     
     let isMounted = true;
-    let intervalId: any;
+    let timerId: any = null;
 
     const fetchStatus = async () => {
       try {
@@ -396,11 +416,16 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
           return;
         }
         
+        let anyRunning = false;
+        
         if (isMounted && data) {
           const statusMap: Record<string, any> = {};
           
           data.forEach(job => {
             const subId = job.submodule_id;
+            if (job.status === 'running') {
+              anyRunning = true;
+            }
             if (!subId || statusMap[subId]) return; // already have latest for this sub
 
             const timestamp = job.completed_at || job.updated_at || job.started_at;
@@ -430,22 +455,33 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
 
           setClientStatusBySubmodule(statusMap);
         }
+        
+        if (isMounted && anyRunning) {
+          timerId = setTimeout(fetchStatus, 3000);
+        }
       } catch (e) {
         console.error(e);
       }
     };
 
     fetchStatus();
-    intervalId = setInterval(fetchStatus, 3000);
     
     return () => {
       isMounted = false;
-      if (intervalId) clearInterval(intervalId);
+      if (timerId) clearTimeout(timerId);
     };
-  }, [selectedClientId]);
+  }, [selectedClientId, Object.values(pipelineStatuses).some(p => p.status === 'running')]);
 
   const handleRunPipeline = async (promptId: string, clientId: string, promptContent: string, submoduleId: string, source: string) => {
-    setPipelineStatuses(prev => ({ ...prev, [promptId]: { status: 'running', stage: 'starting' } }));
+    setPipelineStatuses(prev => ({ 
+      ...prev, 
+      [promptId]: { 
+        status: 'running', 
+        stage: 'starting',
+        counts: { fetched: 0, afterUrlCheck: 0, afterTopicDedup: 0, afterQualityFilter: 0, processed: 0 }
+      } 
+    }));
+    setArticleLogsBySubmodule(prev => ({ ...prev, [promptId]: [] }));
     try {
       const { data: clientData, error: clientErr } = await supabase.schema('admin').from('clients').select('industry').eq('id', clientId).single();
       if (clientErr) throw clientErr;
@@ -479,7 +515,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       }
       const { jobId } = await res.json();
       
-      setPipelineStatuses(prev => ({ ...prev, [promptId]: { status: 'running', stage: 'started', jobId } }));
+      setPipelineStatuses(prev => ({ ...prev, [promptId]: { ...prev[promptId], status: 'running', stage: 'started', jobId } }));
 
       const poll = async () => {
         try {
@@ -584,8 +620,10 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       setSelectedModuleId("");
       setSelectedSubmoduleId("");
       setNewPromptText("");
-    } catch (err) {
+      showToast("Processing prompt added");
+    } catch (err: any) {
       console.error("Error adding prompt:", err);
+      showToast(err.message || "Failed to add prompt", 'error');
     } finally {
       setIsSaving(false);
     }
@@ -602,8 +640,10 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       
       setDbPrompts(prev => prev.map(p => p.id === promptId ? { ...p, prompt_text: text, last_run: new Date().toISOString() } : p));
       setEditingModuleIdState(null);
-    } catch (err) {
+      showToast("Prompt updated successfully");
+    } catch (err: any) {
       console.error("Failed to update prompt:", err);
+      showToast(err.message || "Failed to update prompt", 'error');
     }
   };
 
@@ -617,8 +657,10 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       if (error) throw error;
       setDbPrompts(prev => prev.filter(p => p.id !== promptId));
       setConfirmDeleteModuleId(null);
-    } catch (err) {
+      showToast("Prompt deleted");
+    } catch (err: any) {
       console.error("Failed to delete prompt:", err);
+      showToast(err.message || "Failed to delete prompt", 'error');
     }
   };
 
@@ -1203,8 +1245,16 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                         const currentContent = isEditing ? editPromptValue : prompt.content;
                         const currentLastEdited = prompt.lastEdited;
 
-                        const promptStatus = clientStatusBySubmodule[prompt.submoduleId];
+                        const promptStatus = {
+                          ...clientStatusBySubmodule[prompt.submoduleId],
+                          ...pipelineStatuses[prompt.id]
+                        };
                         const promptLogs = articleLogsBySubmodule[prompt.submoduleId] || [];
+
+                        const effectiveStatus = {
+                          ...promptStatus,
+                          ...pipelineStatuses[prompt.id]
+                        };
 
                         return (
                           <div key={prompt.id} className="space-y-3 mb-6 last:mb-0">
@@ -1257,28 +1307,28 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                       <div className="flex items-center gap-1.5 ml-1">
                                         {!isPaused ? (
                                           <>
-                                            {(!promptStatus || promptStatus.hasRun === false || promptStatus.status === 'never run') ? (
+                                            {(!effectiveStatus || effectiveStatus.hasRun === false || effectiveStatus.status === 'never run') ? (
                                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] border border-slate-200/50 bg-slate-50 text-slate-500 font-bold text-[9.5px] leading-tight select-none">
                                                 <span>Never run</span>
                                               </span>
-                                            ) : promptStatus.status === 'completed' ? (
+                                            ) : effectiveStatus.status === 'completed' ? (
                                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] border border-emerald-200/50 bg-emerald-50 text-emerald-700 font-bold text-[9.5px] leading-tight select-none">
                                                 <CheckCircle2 className="h-2.5 w-2.5 text-emerald-500" />
                                                 <span>Completed</span>
                                               </span>
-                                            ) : promptStatus.status === 'failed' ? (
+                                            ) : effectiveStatus.status === 'failed' ? (
                                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] border border-red-200/50 bg-red-50 text-red-700 font-bold text-[9.5px] leading-tight select-none">
                                                 <ShieldAlert className="h-2.5 w-2.5 text-red-500" />
                                                 <span>Failed</span>
                                               </span>
-                                            ) : promptStatus.status === 'running' ? (
+                                            ) : effectiveStatus.status === 'running' ? (
                                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] border border-yellow-200/50 bg-yellow-50 text-yellow-700 font-bold text-[9.5px] leading-tight select-none">
                                                 <span className="animate-spin text-yellow-600 inline-block font-sans">↻</span>
                                                 <span>Running</span>
                                               </span>
                                             ) : (
                                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] border border-slate-200/50 bg-slate-50 text-slate-500 font-bold text-[9.5px] leading-tight select-none">
-                                                <span>{promptStatus.status}</span>
+                                                <span>{effectiveStatus.status}</span>
                                               </span>
                                             )}
                                             <button
@@ -1448,7 +1498,10 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                      const activeFrequency = tempSchedule ? tempSchedule.frequency : currentSched.frequency;
                                      const activeTime = tempSchedule ? tempSchedule.time : currentSched.time;
 
-                                     const promptStatus = clientStatusBySubmodule[prompt.submoduleId];
+                                     const promptStatus = {
+                                       ...clientStatusBySubmodule[prompt.submoduleId],
+                                       ...pipelineStatuses[prompt.id]
+                                     };
                                      const promptLogs = articleLogsBySubmodule[prompt.submoduleId] || [];
 
                                    return (
@@ -1602,7 +1655,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                                       <span className="animate-spin inline-block">↻</span>
                                                       <span>Pipeline started{pipelineStatuses[prompt.id]?.jobId ? ` — Job ID: ${pipelineStatuses[prompt.id].jobId}` : ''}</span>
                                                     </div>
-                                                    <div className="text-slate-600 ml-4 font-medium">Stage: {promptStatus?.stage || pipelineStatuses[prompt.id]?.stage || 'fetching'}</div>
+                                                    <div className="text-slate-600 ml-4 font-medium">Stage: {STAGE_LABELS[promptStatus?.stage || pipelineStatuses[prompt.id]?.stage || 'fetching'] || promptStatus?.stage || pipelineStatuses[prompt.id]?.stage || 'fetching'}</div>
                                                     {pipelineStatuses[prompt.id]?.counts && (
                                                       <div className="text-slate-500 ml-4">
                                                         Processed: {pipelineStatuses[prompt.id].counts?.processed || 0}
@@ -1613,7 +1666,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                                 {pipelineStatuses[prompt.id]?.status === 'completed' && (
                                                   <div className="flex items-center gap-1.5 font-semibold text-emerald-700">
                                                     <CheckCircle2 className="h-3.5 w-3.5" />
-                                                    <span>Last Run completed — {pipelineStatuses[prompt.id].signalsStored || 0} signals stored</span>
+                                                    <span>Last Run {STAGE_LABELS[pipelineStatuses[prompt.id]?.status || 'completed'] || 'Completed'} — {pipelineStatuses[prompt.id].signalsStored || 0} signals stored</span>
                                                   </div>
                                                 )}
                                                 {pipelineStatuses[prompt.id]?.status === 'failed' && (

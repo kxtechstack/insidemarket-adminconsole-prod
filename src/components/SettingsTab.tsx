@@ -23,9 +23,10 @@ interface SettingsTabProps {
   settings: SystemSettings | null;
   onSaveSettings: (settings: SystemSettings) => Promise<void>;
   saving: boolean;
+  showToast: (message: string, type?: 'success' | 'error') => void;
 }
 
-export default function SettingsTab({ settings, onSaveSettings, saving }: SettingsTabProps) {
+export default function SettingsTab({ settings, onSaveSettings, saving, showToast }: SettingsTabProps) {
   const [geminiModel, setGeminiModel] = useState("gemini-3.5-flash");
   const [temperature, setTemperature] = useState(0.7);
   const [maxTokens, setMaxTokens] = useState(1548);
@@ -33,8 +34,6 @@ export default function SettingsTab({ settings, onSaveSettings, saving }: Settin
   const [maxRequestsPerMin, setMaxRequestsPerMin] = useState(60);
   const [defaultSystemInstruction, setDefaultSystemInstruction] = useState("");
   const [intelligenceTone, setIntelligenceTone] = useState("strategic");
-
-  const [toastMessage, setToastMessage] = useState("");
 
   const modelOptions: ModelOption[] = [
     { value: "gemini-3.5-flash", label: "Gemini 3.5 Flash (Default)", type: "flash" },
@@ -66,9 +65,13 @@ export default function SettingsTab({ settings, onSaveSettings, saving }: Settin
       defaultSystemInstruction,
       intelligenceTone
     };
-    await onSaveSettings(updated);
-    setToastMessage("Settings updated successfully!");
-    setTimeout(() => setToastMessage(""), 3000);
+    try {
+      await onSaveSettings(updated);
+      showToast("Settings updated successfully!");
+    } catch (err: any) {
+      console.error("Error saving settings:", err);
+      showToast(err.message || "Failed to save settings", 'error');
+    }
   };
 
   if (!settings) {
@@ -83,14 +86,6 @@ export default function SettingsTab({ settings, onSaveSettings, saving }: Settin
     <div className="flex flex-col min-h-full">
       <div className="p-6 max-w-4xl mx-auto space-y-4 flex-1 w-full">
         
-        {/* Toast feedback */}
-        {toastMessage && (
-          <div className="bg-emerald-500 text-white font-semibold text-xs px-4 py-3 rounded-[6px] flex items-center gap-2 animate-bounce fixed top-4 right-4 z-50">
-            <CheckCircle2 className="h-4 w-4" />
-            <span>{toastMessage}</span>
-          </div>
-        )}
-
         <form id="settings-form" onSubmit={handleFormSubmit} className="space-y-4">
           
           {/* Model Configurations card */}

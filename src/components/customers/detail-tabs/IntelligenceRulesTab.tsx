@@ -3,7 +3,11 @@ import { useIntelligenceModules } from "../../../data/intelligenceModules";
 import { supabase } from "../../../lib/supabase";
 import { Save, AlertCircle, Edit, Link } from "lucide-react";
 
-export const IntelligenceRulesTab: React.FC = () => {
+interface IntelligenceRulesTabProps {
+  showToast: (message: string, type?: 'success' | 'error') => void;
+}
+
+export const IntelligenceRulesTab: React.FC<IntelligenceRulesTabProps> = ({ showToast }) => {
   const { modules, loading: modulesLoading } = useIntelligenceModules();
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
 
@@ -28,7 +32,6 @@ export const IntelligenceRulesTab: React.FC = () => {
   const [descriptionText, setDescriptionText] = useState("");
   const [isEditMode, setIsEditMode] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [saveSuccess, setSaveSuccess] = useState(false);
 
   useEffect(() => {
     if (modules.length > 0 && !selectedModuleId) {
@@ -79,14 +82,12 @@ export const IntelligenceRulesTab: React.FC = () => {
     setTitleText(prompt.title || "");
     setPromptText(prompt.prompt_template || "");
     setDescriptionText(prompt.description || "");
-    setSaveSuccess(false);
     setIsEditMode(false);
   };
 
   const handleSave = async () => {
     if (!selectedPrompt) return;
     setSaving(true);
-    setSaveSuccess(false);
     try {
       const now = new Date().toISOString();
       const { error } = await supabase
@@ -100,7 +101,6 @@ export const IntelligenceRulesTab: React.FC = () => {
         .eq("id", selectedPrompt.id);
         
       if (!error) {
-        setSaveSuccess(true);
         const updatedPrompt = { 
           ...selectedPrompt, 
           title: titleText,
@@ -111,13 +111,14 @@ export const IntelligenceRulesTab: React.FC = () => {
         setSelectedPrompt(updatedPrompt);
         setPrompts(prompts.map(p => p.id === selectedPrompt.id ? updatedPrompt : p));
         setIsEditMode(false);
-        setTimeout(() => setSaveSuccess(false), 3000);
+        showToast("Rule updated successfully");
       } else {
         console.error("Error saving prompt:", error);
-        alert(`Failed to save: ${error.message}`);
+        showToast(error.message || "Failed to save rule", 'error');
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      showToast(e.message || "Error saving rule", 'error');
     } finally {
       setSaving(false);
     }
@@ -285,12 +286,6 @@ export const IntelligenceRulesTab: React.FC = () => {
                           </div>
                         </div>
                         
-                        {saveSuccess && (
-                          <div className="bg-emerald-50 border-b border-emerald-100 px-5 py-2 text-[10px] font-bold text-emerald-700 flex items-center justify-center">
-                            Prompt updated successfully.
-                          </div>
-                        )}
-
                         <div className="flex-1 p-3.5 pt-0 relative">
                           <textarea
                             value={promptText}
