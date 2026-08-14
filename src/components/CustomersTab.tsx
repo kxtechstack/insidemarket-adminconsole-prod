@@ -37,12 +37,8 @@ import ClientDetailView from "./ClientDetailView";
 import { 
   CustomerList, 
   OnboardModal, 
-  AddCustomTaskModal, 
-  BasicInfoTab, 
-  MonitoringScopeTab, 
-  DataCollectionTab, 
-  IntelligenceRulesTab,
-  CustomDataSourcesTab
+  AddCustomTaskModal,
+  getClientMeta
 } from "./customers";
 
 interface CustomersTabProps {
@@ -140,34 +136,6 @@ export default function CustomersTab({
   const [newCustDesignations, setNewCustDesignations] = useState("");
   const [newCustLocation, setNewCustLocation] = useState("");
 
-  // Helper to obtain client design statistics dynamically loaded from Supabase PostgreSQL database
-  const getClientMeta = (c: Customer) => {
-    let userCount = 0;
-    try {
-      if (c.keyContacts) {
-        const parsed = JSON.parse(c.keyContacts);
-        if (Array.isArray(parsed)) {
-          userCount = parsed.length;
-        }
-      }
-    } catch (e) {
-      // fallback
-    }
-
-    // Stable calculation fallback for subscriptions and lastActive based on real metadata
-    const charSum = (c.company || "").split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-    const subscriptions = (charSum % 3) + 1;
-    const lastActive = c.joinedDate ? `${c.joinedDate} 09:00` : "2026-06-03 10:19";
-    const location = c.location || "London, UK";
-
-    return { 
-      users: userCount, 
-      subscriptions, 
-      lastActive, 
-      location 
-    };
-  };
-
   // Select the initial customer when customers load
   useEffect(() => {
     if (customers.length > 0 && !selectedClientId) {
@@ -231,148 +199,6 @@ export default function CustomersTab({
   };
 
   const completeness = calculateCompleteness();
-
-  const handleStartEditRow = (u: any) => {
-    setEditingRowId(u.id);
-    setEditFirstName(u.firstName);
-    setEditLastName(u.lastName);
-    setEditDesignation(u.designation);
-    setEditEmail(u.email);
-    setEditLastActive(u.lastActive);
-  };
-
-  const handleCancelEditRow = () => {
-    if (editingRowId) {
-      const user = accessUsers.find(u => u.id === editingRowId);
-      if (user && (!user.firstName || !user.firstName.trim()) && (!user.lastName || !user.lastName.trim())) {
-        setAccessUsers(accessUsers.filter(u => u.id !== editingRowId));
-      }
-    }
-    setEditingRowId(null);
-  };
-
-  const handleSaveEditRow = async (id: string) => {
-    if (!editFirstName.trim() || !editLastName.trim()) return;
-
-    const userToSave = accessUsers.find(u => u.id === id);
-    if (!userToSave) return;
-
-    // Handle new user invite via API
-    if (userToSave.isNew) {
-      setIsSavingRow(true);
-      setRowError(null);
-      try {
-        const res = await fetch(`${import.meta.env.VITE_API_URL}/admin/invite-user`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            email: editEmail, 
-            clientId: selectedClientId, 
-            firstName: editFirstName, 
-            lastName: editLastName, 
-            designation: editDesignation 
-          })
-        });
-        
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.message || `Failed to send invite: ${res.statusText}`);
-        }
-      } catch (err: any) {
-        setRowError(err.message);
-        setIsSavingRow(false);
-        return; // Keep in edit mode so user can fix or try again
-      }
-      setIsSavingRow(false);
-    }
-
-    const updated = accessUsers.map(u => {
-      if (u.id === id) {
-        // Strip isNew flag upon successful save/invite
-        const { isNew, ...rest } = u;
-        return {
-          ...rest,
-          firstName: editFirstName,
-          lastName: editLastName,
-          designation: editDesignation,
-          email: editEmail,
-          lastActive: editLastActive === "Never" ? "Never" : editLastActive
-        };
-      }
-      return u;
-    });
-    setAccessUsers(updated);
-    setEditingRowId(null);
-    setRowError(null);
-    
-    const client = customers.find(c => c.id === selectedClientId);
-    if (client) {
-      onUpdateCustomer(selectedClientId, {
-        keyContacts: JSON.stringify(updated)
-      });
-    }
-  };
-
-  const handleToggleUserActive = (id: string) => {
-    const updated = accessUsers.map(u => {
-      if (u.id === id) {
-        return { ...u, active: !u.active };
-      }
-      return u;
-    });
-    setAccessUsers(updated);
-    
-    const client = customers.find(c => c.id === selectedClientId);
-    if (client) {
-      onUpdateCustomer(selectedClientId, {
-        keyContacts: JSON.stringify(updated)
-      });
-    }
-  };
-
-  const handleDeleteUser = (id: string) => {
-    const updated = accessUsers.filter(u => u.id !== id);
-    setAccessUsers(updated);
-    
-    const client = customers.find(c => c.id === selectedClientId);
-    if (client) {
-      onUpdateCustomer(selectedClientId, {
-        keyContacts: JSON.stringify(updated)
-      });
-    }
-  };
-
-  const handlePasswordReset = (email: string) => {
-    setResetNotice(`Password reset link sent to ${email}`);
-    setResetNoticeEmail(email);
-    setTimeout(() => {
-      setResetNotice(null);
-      setResetNoticeEmail(null);
-    }, 2500);
-  };
-
-  const handleAddAccessUser = () => {
-    const newId = `u-${Date.now()}`;
-    const newUser = {
-      id: newId,
-      firstName: "",
-      lastName: "",
-      designation: "",
-      email: "",
-      lastActive: "Never",
-      active: true,
-      isNew: true
-    };
-    const updated = [...accessUsers, newUser];
-    setAccessUsers(updated);
-    setEditingRowId(newId);
-    setEditFirstName("");
-    setEditLastName("");
-    setEditDesignation("");
-    setEditEmail("");
-    setEditLastActive("Never");
-    setRowError(null);
-  };
 
   const handleOnboardSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

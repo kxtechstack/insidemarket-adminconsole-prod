@@ -11,6 +11,8 @@ export interface Customer {
   status: 'active' | 'suspended';
   email: string;
   joinedDate: string;
+  lastActive?: string;
+  last_active?: string;
   apiCallsCount: number;
   promptVariables: {
     competitors: string; // comma separated list
@@ -43,6 +45,18 @@ export interface Customer {
     customTasks?: any[];
     selectedCustomSignals?: Record<string, string[]>;
   };
+}
+
+export interface AccessUser {
+  id: string;
+  authId?: string;
+  firstName: string;
+  lastName: string;
+  designation: string;
+  email: string;
+  lastActive?: string;
+  active: boolean;
+  isNew?: boolean;
 }
 
 export type PromptCategory = 'Analysis' | 'Competitor Tracking' | 'Trend Report' | 'Sentiment Analysis';

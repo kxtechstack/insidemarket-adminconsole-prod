@@ -44,6 +44,7 @@ interface BasicInfoTabProps {
   handleStartEditRow: (user: any) => void;
   handlePasswordReset: (email: string) => void;
   handleDeleteUser: (id: string) => void;
+  deletingUserId?: string | null;
 }
 
 export const BasicInfoTab: React.FC<BasicInfoTabProps> = ({
@@ -87,7 +88,8 @@ export const BasicInfoTab: React.FC<BasicInfoTabProps> = ({
   handleCancelEditRow,
   handleStartEditRow,
   handlePasswordReset,
-  handleDeleteUser
+  handleDeleteUser,
+  deletingUserId
 }) => {
   return (
     <div className="flex flex-col">
@@ -323,14 +325,37 @@ export const BasicInfoTab: React.FC<BasicInfoTabProps> = ({
 
                     <td className="py-1.5 px-4 text-xs text-slate-600">
                       {isEditing ? (
-                        <input
-                          type="email"
-                          value={editEmail}
-                          placeholder="email@company.com"
-                          onChange={(e) => setEditEmail(e.target.value)}
-                          className="w-full px-2 py-1 bg-white border border-[#cbd5e1] text-slate-900 text-xs focus:outline-none focus:border-[#4f46e5] focus:ring-4 focus:ring-indigo-100 placeholder-slate-400 transition-all"
-                          style={{ borderRadius: "6px" }}
-                        />
+                        <div className="flex flex-col gap-1">
+                          <input
+                            type="email"
+                            value={editEmail}
+                            placeholder="email@company.com"
+                            onChange={(e) => setEditEmail(e.target.value)}
+                            className={`w-full px-2 py-1 bg-white border text-slate-900 text-xs focus:outline-none focus:ring-4 placeholder-slate-400 transition-all ${
+                              rowError === 'This email is already registered' ||
+                              rowError === 'email_already_registered' ||
+                              rowError === 'This email is already added' ||
+                              rowError === 'This email is already registered to another client' ||
+                              rowError === 'email_registered_to_other_client'
+                                ? 'border-red-500 focus:border-red-500 focus:ring-red-100'
+                                : 'border-[#cbd5e1] focus:border-[#4f46e5] focus:ring-indigo-100'
+                            }`}
+                            style={{ borderRadius: "6px" }}
+                          />
+                          {(rowError === 'This email is already registered' ||
+                            rowError === 'email_already_registered' ||
+                            rowError === 'This email is already added' ||
+                            rowError === 'This email is already registered to another client' ||
+                            rowError === 'email_registered_to_other_client') && (
+                            <span className="text-[10px] text-red-500 font-semibold leading-tight whitespace-nowrap">
+                              {rowError === 'email_registered_to_other_client' || rowError === 'This email is already registered to another client'
+                                ? 'This email is already registered to another client'
+                                : rowError === 'email_already_registered'
+                                ? 'This email is already registered'
+                                : rowError}
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <span className="select-text">{user.email || "—"}</span>
                       )}
@@ -378,8 +403,13 @@ export const BasicInfoTab: React.FC<BasicInfoTabProps> = ({
                               Cancel
                             </button>
                           </div>
-                          {rowError && (
-                            <span className="text-[9px] text-red-500 font-bold max-w-[120px] text-right leading-tight">
+                          {rowError &&
+                            rowError !== 'This email is already registered' &&
+                            rowError !== 'email_already_registered' &&
+                            rowError !== 'This email is already added' &&
+                            rowError !== 'This email is already registered to another client' &&
+                            rowError !== 'email_registered_to_other_client' && (
+                            <span className="text-[9px] text-red-500 font-bold max-w-[130px] text-right leading-tight">
                               {rowError}
                             </span>
                           )}
@@ -411,12 +441,19 @@ export const BasicInfoTab: React.FC<BasicInfoTabProps> = ({
                           <button
                             type="button"
                             onClick={() => handleDeleteUser(user.id)}
-                            className="p-1 text-slate-500 hover:text-red-650 hover:bg-slate-50 transition-all rounded-[6px] cursor-pointer relative group"
+                            disabled={deletingUserId === user.id || isSavingRow}
+                            className={`p-1 text-slate-500 hover:text-red-650 hover:bg-slate-50 transition-all rounded-[6px] cursor-pointer relative group ${
+                              deletingUserId === user.id ? 'opacity-60 cursor-not-allowed' : ''
+                            }`}
                             style={{ borderRadius: "6px" }}
                           >
-                            <Trash2 className="h-3.5 w-3.5" />
+                            {deletingUserId === user.id ? (
+                              <span className="w-3.5 h-3.5 border-2 border-red-500 border-t-transparent rounded-full animate-spin block"></span>
+                            ) : (
+                              <Trash2 className="h-3.5 w-3.5" />
+                            )}
                             <span className="absolute right-full top-1/2 -translate-y-1/2 mr-2 bg-gray-900 text-white text-[10px] px-2 py-1 rounded-sm opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150 z-50 whitespace-nowrap">
-                              Delete Access User
+                              {deletingUserId === user.id ? "Deleting User..." : "Delete Access User"}
                             </span>
                           </button>
                         </div>

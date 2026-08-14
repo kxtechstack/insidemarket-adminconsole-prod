@@ -76,8 +76,10 @@ export default function App() {
 
       const mappedCustomers: Customer[] = (clients || []).map((client: any) => {
         const icp = (icps || []).find((i: any) => i.client_id === client.id);
+        const isUUID = (str: any) => typeof str === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
         const matchedUsers = (users || []).filter((u: any) => u.client_id === client.id).map((u: any) => ({
           id: u.id,
+          authId: u.auth_id || u.user_id || (isUUID(u.id) ? u.id : undefined),
           firstName: u.first_name || "",
           lastName: u.last_name || "",
           designation: u.designation || "",
@@ -111,6 +113,8 @@ export default function App() {
           status: (client.status === 'suspended' ? 'suspended' : 'active') as ('active' | 'suspended'),
           email: matchedUsers[0]?.email || `${(client.company_name || "client").toLowerCase().replace(/\s/g, '')}@example.com`,
           joinedDate: client.created_at ? client.created_at.split("T")[0] : new Date().toISOString().split("T")[0],
+          lastActive: client.last_active || undefined,
+          last_active: client.last_active || undefined,
           apiCallsCount: 0,
           promptVariables: {
             competitors: competitorsStr,

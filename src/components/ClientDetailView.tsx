@@ -88,6 +88,7 @@ export default function ClientDetailView({
   const [accessUsers, setAccessUsers] = useState<any[]>([]);
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [isSavingRow, setIsSavingRow] = useState(false);
+  const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
   
   // Row inline editing input states
@@ -110,7 +111,12 @@ export default function ClientDetailView({
     } catch (e) {
       console.error("Failed to parse keyContacts json", e);
     }
-    setAccessUsers(parsed);
+    const isUUID = (str: any) => typeof str === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+    const enriched = parsed.map(u => ({
+      ...u,
+      authId: u.authId || (isUUID(u.id) ? u.id : undefined)
+    }));
+    setAccessUsers(enriched);
   }, [activeClient]);
 
   useEffect(() => {
@@ -140,48 +146,132 @@ export default function ClientDetailView({
   const handleCancelEditRow = () => {
     if (editingRowId) {
       const user = accessUsers.find(u => u.id === editingRowId);
-      if (user && !user.firstName && !user.lastName) {
+      if (user && (user.isNew || (!user.firstName && !user.lastName))) {
         setAccessUsers(prev => prev.filter(u => u.id !== editingRowId));
       }
     }
     setEditingRowId(null);
+    setRowError(null);
   };
 
   const handleSaveEditRow = async (id: string) => {
-    if (!editFirstName || !editLastName) {
+    if (!editFirstName.trim() || !editLastName.trim()) {
       setRowError("First and Last name are required");
       return;
     }
+    if (!editEmail.trim()) {
+      setRowError("Email is required");
+      return;
+    }
+
+    const trimmedEmail = editEmail.trim().toLowerCase();
+
+    // Check if email already exists elsewhere in current client's accessUsers array
+    const emailExistsInCurrent = accessUsers.some(
+      u => u.id !== id && u.email && u.email.trim().toLowerCase() === trimmedEmail
+    );
+
+    if (emailExistsInCurrent) {
+      setRowError("This email is already added");
+      return;
+    }
+
+    // Check if email already belongs to another client in the loaded customers list
+    const emailExistsInOtherClient = (customers || []).some(c => {
+      if (c.id === selectedClientId) return false;
+      if (!c.keyContacts) return false;
+      try {
+        const contacts = typeof c.keyContacts === "string" ? JSON.parse(c.keyContacts) : c.keyContacts;
+        if (Array.isArray(contacts)) {
+          return contacts.some(
+            (u: any) => u.email && u.email.trim().toLowerCase() === trimmedEmail
+          );
+        }
+      } catch (e) {}
+      return false;
+    });
+
+    if (emailExistsInOtherClient) {
+      setRowError("This email is already registered to another client");
+      return;
+    }
+
     setRowError(null);
     setIsSavingRow(true);
 
     try {
+      let authUserId: string | null = null;
       const isNew = accessUsers.find(u => u.id === id)?.isNew;
       if (isNew) {
-        await fetch(`${import.meta.env.VITE_API_URL}/admin/invite-user`, {
+        const res = await fetch(`${import.meta.env.VITE_API_URL}/admin/invite-user`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                email: editEmail,
+                email: editEmail.trim(),
                 clientId: selectedClientId,
-                name: `${editFirstName} ${editLastName}`,
-                designation: editDesignation
+                name: `${editFirstName.trim()} ${editLastName.trim()}`,
+                firstName: editFirstName.trim(),
+                lastName: editLastName.trim(),
+                designation: editDesignation.trim()
             })
         });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          const isRegisteredToOther =
+            errData.error === 'email_registered_to_other_client' ||
+            errData.code === 'email_registered_to_other_client' ||
+            (typeof errData.message === 'string' && errData.message.toLowerCase().includes('registered to another client')) ||
+            (typeof errData.error === 'string' && errData.error.toLowerCase().includes('registered to another client'));
+
+          if (isRegisteredToOther) {
+            setRowError('This email is already registered to another client');
+            setIsSavingRow(false);
+            return;
+          }
+
+          const isEmailAlreadyRegistered =
+            errData.error === 'email_already_registered' ||
+            errData.code === 'email_already_registered' ||
+            (typeof errData.message === 'string' && errData.message.toLowerCase().includes('already been registered')) ||
+            (typeof errData.error === 'string' && errData.error.toLowerCase().includes('already been registered')) ||
+            (typeof errData.message === 'string' && errData.message.toLowerCase().includes('already registered')) ||
+            (typeof errData.error === 'string' && errData.error.toLowerCase().includes('already registered'));
+
+          if (isEmailAlreadyRegistered) {
+            setRowError('This email is already registered');
+            setIsSavingRow(false);
+            return;
+          }
+
+          throw new Error(errData.message || errData.error || `Failed to send invite: ${res.statusText || res.status}`);
+        }
+
+        const inviteData = await res.json().catch(() => ({}));
+        if (inviteData?.user?.id) {
+          authUserId = inviteData.user.id;
+        } else if (inviteData?.userId) {
+          authUserId = inviteData.userId;
+        }
       }
 
+      const isUUID = (str: any) => typeof str === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
       const updated = accessUsers.map(u => u.id === id ? {
         ...u,
-        firstName: editFirstName,
-        lastName: editLastName,
-        designation: editDesignation,
-        email: editEmail,
+        id: authUserId || u.id,
+        authId: authUserId || u.authId || (isUUID(u.id) ? u.id : undefined),
+        firstName: editFirstName.trim(),
+        lastName: editLastName.trim(),
+        designation: editDesignation.trim(),
+        email: editEmail.trim(),
         isNew: false
       } : u);
       
       setAccessUsers(updated);
-      await onUpdateCustomer(selectedClientId, { keyContacts: JSON.stringify(updated) });
+      const validConfirmedUsers = updated.filter(u => !u.isNew);
+      await onUpdateCustomer(selectedClientId, { keyContacts: JSON.stringify(validConfirmedUsers) });
       setEditingRowId(null);
+      setRowError(null);
       showToast("Contact saved successfully!");
     } catch (err: any) {
       setRowError(err.message || "Failed to save contact");
@@ -193,13 +283,56 @@ export default function ClientDetailView({
   const handleToggleUserActive = async (id: string) => {
       const updated = accessUsers.map(u => u.id === id ? { ...u, active: !u.active } : u);
       setAccessUsers(updated);
-      await onUpdateCustomer(selectedClientId, { keyContacts: JSON.stringify(updated) });
+      const validConfirmedUsers = updated.filter(u => !u.isNew);
+      await onUpdateCustomer(selectedClientId, { keyContacts: JSON.stringify(validConfirmedUsers) });
   };
 
   const handleDeleteUser = async (id: string) => {
+    const userToDelete = accessUsers.find(u => u.id === id);
+    if (!userToDelete) return;
+
+    // If it is just an unsaved draft row, remove locally immediately
+    if (userToDelete.isNew) {
       const updated = accessUsers.filter(u => u.id !== id);
       setAccessUsers(updated);
-      await onUpdateCustomer(selectedClientId, { keyContacts: JSON.stringify(updated) });
+      setEditingRowId(null);
+      setRowError(null);
+      return;
+    }
+
+    const isUUID = (str: any) => typeof str === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+    const authId = userToDelete.authId || (isUUID(userToDelete.id) ? userToDelete.id : null);
+    const email = userToDelete.email;
+
+    setDeletingUserId(id);
+    try {
+      const deleteUrl = `${import.meta.env.VITE_API_URL || ""}/admin/delete-user`;
+      const res = await fetch(deleteUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: authId || id,
+          id: authId || id,
+          email: email
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || errData.message || `Failed to delete user: ${res.statusText || res.status}`);
+      }
+
+      const updated = accessUsers.filter(u => u.id !== id);
+      setAccessUsers(updated);
+      const validConfirmedUsers = updated.filter(u => !u.isNew);
+      await onUpdateCustomer(selectedClientId, { keyContacts: JSON.stringify(validConfirmedUsers) });
+      showToast("Access user deleted successfully!");
+    } catch (err: any) {
+      console.error("Error deleting access user:", err);
+      showToast(err.message || "Failed to delete access user", "error");
+    } finally {
+      setDeletingUserId(null);
+    }
   };
 
   const handlePasswordReset = (email: string) => {
@@ -212,6 +345,11 @@ export default function ClientDetailView({
   };
 
   const handleAddAccessUser = () => {
+    const existingUnsaved = accessUsers.find(u => u.isNew);
+    if (existingUnsaved) {
+      handleStartEditRow(existingUnsaved);
+      return;
+    }
     const newId = `u-${Date.now()}`;
     const newUser = { id: newId, firstName: "", lastName: "", designation: "", email: "", active: true, isNew: true };
     setAccessUsers([...accessUsers, newUser]);
@@ -238,15 +376,15 @@ export default function ClientDetailView({
   const [newCustomSubTasks, setNewCustomSubTasks] = useState([""]);
 
   // Data Collection states
-  const [customPrompts, setCustomPrompts] = useState<Record<string, string>>({});
+  const [customPrompts, setCustomPrompts] = useState<Record<string, Record<string, any>>>({});
   const [editingModuleIdState, setEditingModuleIdState] = useState<string | null>(null);
   const [editPromptValue, setEditPromptValue] = useState("");
-  const [pausedModules, setPausedModules] = useState<Record<string, boolean>>({});
+  const [pausedModules, setPausedModules] = useState<Record<string, Record<string, boolean>>>({});
   const [runningModuleId, setRunningModuleId] = useState<string | null>(null);
-  const [moduleLastRan, setModuleLastRan] = useState<Record<string, string>>({});
+  const [moduleLastRan, setModuleLastRan] = useState<Record<string, Record<string, string>>>({});
   const [showHistoryModuleId, setShowHistoryModuleId] = useState<string | null>(null);
   const [tempSchedule, setTempSchedule] = useState<string>("");
-  const [moduleSchedules, setModuleSchedules] = useState<Record<string, string>>({});
+  const [moduleSchedules, setModuleSchedules] = useState<Record<string, Record<string, any>>>({});
   const [confirmDeleteModuleId, setConfirmDeleteModuleId] = useState<string | null>(null);
   
   useEffect(() => {
@@ -364,6 +502,10 @@ export default function ClientDetailView({
   const handleSaveProfile = async () => {
     if (!selectedClientId) return;
     
+    // Filter out any row where isNew is still true before saving — those were never confirmed via a successful invite
+    const validConfirmedUsers = accessUsers.filter(u => !u.isNew);
+    const keyContactsPayload = JSON.stringify(validConfirmedUsers);
+
     const payload: Partial<Customer> = {
       company: editCompany,
       sector: editSector,
@@ -384,7 +526,7 @@ export default function ClientDetailView({
       targetAccounts,
       existingRelationships,
       blacklistCompanies,
-      keyContacts: keyContacts,
+      keyContacts: keyContactsPayload,
       pipelineStatus,
       sectorsToEnter,
       designations
@@ -594,6 +736,7 @@ export default function ClientDetailView({
             handleStartEditRow={handleStartEditRow}
             handlePasswordReset={handlePasswordReset}
             handleDeleteUser={handleDeleteUser}
+            deletingUserId={deletingUserId}
           />
         </div>
         <div className={activeDetailTab === 'scope' ? 'block' : 'hidden'}>
