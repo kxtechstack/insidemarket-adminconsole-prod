@@ -316,6 +316,11 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
   }>>({});
 
   const [clientStatusBySubmodule, setClientStatusBySubmodule] = React.useState<Record<string, any>>({});
+  const clientStatusBySubmoduleRef = React.useRef<Record<string, any>>({});
+
+  React.useEffect(() => {
+    clientStatusBySubmoduleRef.current = clientStatusBySubmodule;
+  }, [clientStatusBySubmodule]);
 
   const [articleLogsBySubmodule, setArticleLogsBySubmodule] = React.useState<Record<string, any[]>>({});
   const [logsModalSubmoduleId, setLogsModalSubmoduleId] = React.useState<string | null>(null);
@@ -324,43 +329,55 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
   const [logsPage, setLogsPage] = React.useState(1);
 
   const fetchArticleLogs = async () => {
-    if (!selectedClientId) return;
-    try {
-      const { data, error } = await supabase
-        .from('article_processing_log')
-        .select('*')
-        .eq('client_id', selectedClientId)
-        .order('created_at', { ascending: false });
+  if (!selectedClientId) return;
+  try {
+    const { data, error } = await supabase
+      .from('article_processing_log')
+      .select('*')
+      .eq('client_id', selectedClientId)
+      .order('created_at', { ascending: false });
 
-      if (error || !data) {
-        setArticleLogsBySubmodule({});
-        return;
+    if (error || !data) {
+      setArticleLogsBySubmodule({});
+      return;
+    }
+
+    const logsBySub: Record<string, any[]> = {};
+    const latestJobPerSub: Record<string, string> = {};
+
+    data.forEach(log => {
+      const subId = log.submodule_id;
+      if (!subId) return;
+
+      if (!latestJobPerSub[subId]) {
+        latestJobPerSub[subId] = log.job_id;
+        logsBySub[subId] = [];
       }
-      
-      const logsBySub: Record<string, any[]> = {};
-      const latestJobPerSub: Record<string, string> = {};
 
-      data.forEach(log => {
-        const subId = log.submodule_id;
-        if (!subId) return;
+      if (log.job_id === latestJobPerSub[subId]) {
+        logsBySub[subId].push(log);
+      }
+    });
 
-        // If we haven't seen this submodule yet, this must be the latest job_id
-        if (!latestJobPerSub[subId]) {
-          latestJobPerSub[subId] = log.job_id;
+    // If a submodule has a run actively in-flight, only trust logs that
+    // belong to THAT job. If the DB's "latest" job for this submodule
+    // isn't the job we know is running (or we don't have a jobId yet),
+    // the new job just hasn't written rows yet — show empty, not stale
+    // logs from the previous run.
+    Object.keys(clientStatusBySubmoduleRef.current).forEach(subId => {
+      const activeStatus = clientStatusBySubmoduleRef.current[subId];
+      if (activeStatus?.status === 'running') {
+        if (!activeStatus.jobId || latestJobPerSub[subId] !== activeStatus.jobId) {
           logsBySub[subId] = [];
         }
+      }
+    });
 
-        // Only include logs for the latest job_id of this submodule
-        if (log.job_id === latestJobPerSub[subId]) {
-          logsBySub[subId].push(log);
-        }
-      });
-
-      setArticleLogsBySubmodule(logsBySub);
-    } catch (e) {
-      console.error(e);
-    }
-  };
+    setArticleLogsBySubmodule(logsBySub);
+  } catch (e) {
+    console.error(e);
+  }
+};
 
   React.useEffect(() => {
     fetchArticleLogs();
@@ -402,7 +419,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
     const fetchStatus = async () => {
       try {
         const { data, error } = await supabase.from('pipeline_job_status')
-          .select('submodule_id, status, current_stage, count_fetched, count_after_url_check, count_after_topic_dedup, count_after_quality_filter, count_stored_final, started_at, completed_at, updated_at')
+          .select('job_id, submodule_id, status, current_stage, count_fetched, count_after_url_check, count_after_topic_dedup, count_after_quality_filter, count_stored_final, started_at, completed_at, updated_at')
           .eq('client_id', selectedClientId)
           .order('started_at', { ascending: false });
 
@@ -440,20 +457,30 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
 
             statusMap[subId] = {
               hasRun: true,
+              jobId: job.job_id,
               status: job.status,
               stage: job.current_stage,
               formattedDate,
               counts: {
-                fetched: job.count_fetched,
-                afterUrlCheck: job.count_after_url_check,
-                afterTopicDedup: job.count_after_topic_dedup,
-                afterQualityFilter: job.count_after_quality_filter,
-                storedFinal: job.count_stored_final
+                fetched: job.count_fetched ?? 0,
+                afterUrlCheck: job.count_after_url_check ?? 0,
+                afterTopicDedup: job.count_after_topic_dedup ?? 0,
+                afterQualityFilter: job.count_after_quality_filter ?? 0,
+                storedFinal: job.count_stored_final ?? 0
               }
             };
           });
 
-          setClientStatusBySubmodule(statusMap);
+          setClientStatusBySubmodule(prev => {
+            const updated = { ...statusMap };
+            // If any submodule is currently marked as running in local state, preserve its active live state
+            Object.keys(prev).forEach(subId => {
+              if (prev[subId]?.status === 'running' && updated[subId]?.status !== 'running') {
+                updated[subId] = prev[subId];
+              }
+            });
+            return updated;
+          });
         }
         
         if (isMounted && anyRunning) {
@@ -464,7 +491,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       }
     };
 
-    fetchStatus();
+    timerId = setTimeout(fetchStatus, 1500);
     
     return () => {
       isMounted = false;
@@ -473,15 +500,35 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
   }, [selectedClientId, Object.values(pipelineStatuses).some(p => p.status === 'running')]);
 
   const handleRunPipeline = async (promptId: string, clientId: string, promptContent: string, submoduleId: string, source: string) => {
+    const initialCounts = {
+      fetched: 0,
+      afterUrlCheck: 0,
+      afterTopicDedup: 0,
+      afterQualityFilter: 0,
+      storedFinal: 0,
+      processed: 0
+    };
+
     setPipelineStatuses(prev => ({ 
       ...prev, 
       [promptId]: { 
         status: 'running', 
         stage: 'starting',
-        counts: { fetched: 0, afterUrlCheck: 0, afterTopicDedup: 0, afterQualityFilter: 0, processed: 0 }
+        counts: initialCounts
       } 
     }));
-    setArticleLogsBySubmodule(prev => ({ ...prev, [promptId]: [] }));
+    setClientStatusBySubmodule(prev => ({
+      ...prev,
+      [submoduleId]: {
+        hasRun: true,
+        status: 'running',
+        stage: 'starting',
+        formattedDate: new Date().toLocaleString(),
+        counts: initialCounts
+      }
+    }));
+    setArticleLogsBySubmodule(prev => ({ ...prev, [submoduleId]: [] }));
+
     try {
       const { data: clientData, error: clientErr } = await supabase.schema('admin').from('clients').select('industry').eq('id', clientId).single();
       if (clientErr) throw clientErr;
@@ -515,60 +562,119 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       }
       const { jobId } = await res.json();
       
-      setPipelineStatuses(prev => ({ ...prev, [promptId]: { ...prev[promptId], status: 'running', stage: 'started', jobId } }));
+      setPipelineStatuses(prev => ({ 
+        ...prev, 
+        [promptId]: { 
+          ...prev[promptId], 
+          status: 'running', 
+          stage: 'started', 
+          jobId,
+          counts: initialCounts
+        } 
+      }));
 
       const poll = async () => {
         try {
           const { data: statusData, error } = await supabase.from('pipeline_job_status')
-            .select('status, current_stage, count_stored_final')
-            .eq('client_id', clientId)
-            .eq('submodule_id', submoduleId)
-            .order('started_at', { ascending: false })
-            .limit(1)
-            .single();
+            .select('job_id, submodule_id, status, current_stage, count_fetched, count_after_url_check, count_after_topic_dedup, count_after_quality_filter, count_stored_final, started_at, completed_at, updated_at')
+            .eq('job_id', jobId)
+            .maybeSingle();
 
           if (error) {
-            if (error.code === 'PGRST116') {
-              setTimeout(poll, 3000);
-            } else {
-              throw error;
+            if (error.code !== 'PGRST116') {
+              console.warn('Error polling pipeline status for job:', jobId, error);
             }
+            setTimeout(poll, 2500);
             return;
           }
+
+          if (!statusData) {
+            setTimeout(poll, 2500);
+            return;
+          }
+
+          const currentCounts = {
+            fetched: statusData.count_fetched ?? 0,
+            afterUrlCheck: statusData.count_after_url_check ?? 0,
+            afterTopicDedup: statusData.count_after_topic_dedup ?? 0,
+            afterQualityFilter: statusData.count_after_quality_filter ?? 0,
+            storedFinal: statusData.count_stored_final ?? 0,
+            processed: statusData.count_stored_final ?? 0
+          };
+
+          const timestamp = statusData.completed_at || statusData.updated_at || statusData.started_at;
+          let formattedDate = '-';
+          if (timestamp) {
+            try {
+              formattedDate = new Date(timestamp).toLocaleString();
+            } catch (e) {
+              formattedDate = String(timestamp);
+            }
+          }
+
+          setClientStatusBySubmodule(prev => ({
+            ...prev,
+            [submoduleId]: {
+              hasRun: true,
+              jobId: statusData.job_id || jobId,
+              status: statusData.status,
+              stage: statusData.current_stage,
+              formattedDate,
+              counts: currentCounts
+            }
+          }));
 
           if (statusData.status === 'completed') {
             setPipelineStatuses(prev => ({
               ...prev,
-              [promptId]: { status: 'completed', signalsStored: statusData.count_stored_final || 0 }
+              [promptId]: { 
+                status: 'completed', 
+                stage: 'completed',
+                jobId,
+                counts: currentCounts,
+                signalsStored: currentCounts.storedFinal 
+              }
             }));
             setModuleLastRan(prev => ({
               ...prev,
               [clientId]: {
                 ...(prev[clientId] || {}),
-                [promptId]: `Last run completed - ${statusData.count_stored_final || 0} signals stored`
+                [promptId]: `Last run completed - ${currentCounts.storedFinal} signals stored`
               }
             }));
+            fetchArticleLogs();
           } else if (statusData.status === 'failed') {
             setPipelineStatuses(prev => ({
               ...prev,
-              [promptId]: { status: 'failed', error: 'Pipeline failed' }
+              [promptId]: { 
+                status: 'failed', 
+                stage: 'failed',
+                jobId,
+                counts: currentCounts,
+                error: 'Pipeline failed' 
+              }
             }));
+            fetchArticleLogs();
           } else {
             setPipelineStatuses(prev => ({
               ...prev,
-              [promptId]: { status: 'running', stage: statusData.current_stage, jobId }
+              [promptId]: { 
+                status: 'running', 
+                stage: statusData.current_stage || 'running', 
+                jobId,
+                counts: currentCounts
+              }
             }));
-            setTimeout(poll, 3000);
+            fetchArticleLogs();
+            setTimeout(poll, 2500);
           }
         } catch (pollErr: any) {
-           setPipelineStatuses(prev => ({
-              ...prev,
-              [promptId]: { status: 'failed', error: pollErr.message }
-           }));
+           console.error('Polling error:', pollErr);
+           setTimeout(poll, 3000);
         }
       };
 
-      setTimeout(poll, 3000);
+      setTimeout(poll, 1500);
     } catch (err: any) {
       const errorMessage = err.message?.toLowerCase().includes('already running')
         ? "Another submodule is currently running for this client — please wait for it to finish before starting a new one."
@@ -1656,11 +1762,6 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                                       <span>Pipeline started{pipelineStatuses[prompt.id]?.jobId ? ` — Job ID: ${pipelineStatuses[prompt.id].jobId}` : ''}</span>
                                                     </div>
                                                     <div className="text-slate-600 ml-4 font-medium">Stage: {STAGE_LABELS[promptStatus?.stage || pipelineStatuses[prompt.id]?.stage || 'fetching'] || promptStatus?.stage || pipelineStatuses[prompt.id]?.stage || 'fetching'}</div>
-                                                    {pipelineStatuses[prompt.id]?.counts && (
-                                                      <div className="text-slate-500 ml-4">
-                                                        Processed: {pipelineStatuses[prompt.id].counts?.processed || 0}
-                                                      </div>
-                                                    )}
                                                   </div>
                                                 )}
                                                 {pipelineStatuses[prompt.id]?.status === 'completed' && (
