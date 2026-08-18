@@ -77,6 +77,7 @@ export default function ClientDetailView({
   const [activeModuleId, setActiveModuleId] = useState<string>("");
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set([]));
   const [enabledModules, setEnabledModules] = useState<Record<string, boolean>>({});
+  const [persistedEnabledModules, setPersistedEnabledModules] = useState<Record<string, boolean>>({});
   const [selectedSignals, setSelectedSignals] = useState<Record<string, string[]>>({});
   const [persistedSignals, setPersistedSignals] = useState<Record<string, string[]>>({});
   const [isSavingConfiguration, setIsSavingConfiguration] = useState(false);
@@ -390,7 +391,12 @@ export default function ClientDetailView({
   useEffect(() => {
     // Initialize based on database values immediately
     const syncMonitoringState = async () => {
-      const [signalsRes, tasksRes] = await Promise.all([
+      const [clientRes, signalsRes, tasksRes] = await Promise.all([
+        supabase.schema('admin')
+          .from('clients')
+          .select('enabled_modules')
+          .eq('id', selectedClientId)
+          .maybeSingle(),
         supabase.schema('admin')
           .from('client_signals')
           .select('signal_id, signals(submodule_id)')
@@ -401,6 +407,7 @@ export default function ClientDetailView({
           .eq('client_id', selectedClientId)
       ]);
       
+      const dbClient = clientRes.data;
       const dbClientSignals = signalsRes.data;
       const dbCustomTasks = tasksRes.data;
       
@@ -444,15 +451,38 @@ export default function ClientDetailView({
         setPersistedCustomSignals(initialCustomSignals);
       }
 
-      // Apply fallback logic only after async checks
-      const mConfig = activeClient.monitoringConfig || { enabledModules: ["md", "fo", "cr"], selectedSignals: {} };
+      // Load enabled modules from admin.clients database or fallback to activeClient.
+      // For new clients, enabled_modules is empty/null, so all modules will be disabled by default.
+      const rawEnabled = dbClient?.enabled_modules ?? activeClient.enabled_modules ?? activeClient.enabledModules ?? activeClient.monitoringConfig?.enabledModules;
       const enabledMap: Record<string, boolean> = {};
-      (mConfig.enabledModules || []).forEach(id => enabledMap[id] = true);
-      if (enabledMap['custom_tasks'] === undefined) {
-        enabledMap['custom_tasks'] = true;
+
+      if (Array.isArray(rawEnabled)) {
+        rawEnabled.forEach((id: string) => {
+          if (id) enabledMap[id] = true;
+        });
+      } else if (rawEnabled && typeof rawEnabled === 'object') {
+        Object.entries(rawEnabled).forEach(([id, val]) => {
+          if (val) enabledMap[id] = true;
+        });
+      } else if (typeof rawEnabled === 'string') {
+        try {
+          const parsed = JSON.parse(rawEnabled);
+          if (Array.isArray(parsed)) {
+            parsed.forEach((id: string) => {
+              if (id) enabledMap[id] = true;
+            });
+          } else if (parsed && typeof parsed === 'object') {
+            Object.entries(parsed).forEach(([id, val]) => {
+              if (val) enabledMap[id] = true;
+            });
+          }
+        } catch (e) {}
       }
+
       setEnabledModules(enabledMap);
+      setPersistedEnabledModules(enabledMap);
       
+      const mConfig = activeClient.monitoringConfig || { enabledModules: [], selectedSignals: {} };
       // If no signals in db, use config signals
       const finalSelectedSignals = Object.keys(nextSelectedSignals).length === 0 ? (mConfig.selectedSignals || {}) : nextSelectedSignals;
       setSelectedSignals(finalSelectedSignals);
@@ -600,9 +630,24 @@ export default function ClientDetailView({
         await supabase.schema('admin').from('custom_task_subtasks').upsert(subtaskUpdates);
       }
 
+      // Filter array of enabled modules to persist in JSONB
+      const enabledModulesList = Object.keys(enabledModules).filter(id => Boolean(enabledModules[id]));
+
+      // Save directly to admin.clients in enabled_modules field (JSONB)
+      const { error: clientUpdateError } = await supabase.schema('admin')
+        .from('clients')
+        .update({ enabled_modules: enabledModulesList })
+        .eq('id', selectedClientId);
+
+      if (clientUpdateError) {
+        console.error("Error updating enabled_modules in clients table:", clientUpdateError);
+      }
+
       await onUpdateCustomer(selectedClientId, {
+        enabled_modules: enabledModulesList,
+        enabledModules: enabledModulesList,
         monitoringConfig: {
-          enabledModules: Object.keys(enabledModules).filter(id => enabledModules[id]),
+          enabledModules: enabledModulesList,
           selectedSignals,
           customTasks: customTasks[selectedClientId] || [],
           selectedCustomSignals: selectedCustomSignals
@@ -611,6 +656,7 @@ export default function ClientDetailView({
       
       setPersistedSignals(selectedSignals);
       setPersistedCustomSignals(selectedCustomSignals);
+      setPersistedEnabledModules(enabledModules);
       showToast("Configuration saved successfully!");
     } catch (err: any) {
       console.error("Error saving configuration", err);
@@ -636,7 +682,8 @@ export default function ClientDetailView({
 
   const hasUnsavedConfiguration =
     JSON.stringify(selectedSignals) !== JSON.stringify(persistedSignals) ||
-    JSON.stringify(selectedCustomSignals) !== JSON.stringify(persistedCustomSignals);
+    JSON.stringify(selectedCustomSignals) !== JSON.stringify(persistedCustomSignals) ||
+    JSON.stringify(enabledModules) !== JSON.stringify(persistedEnabledModules);
 
   return (
     <div className="bg-white border border-[#e2e8f0] p-3 flex flex-col" style={{ borderRadius: "6px" }}>
@@ -776,6 +823,7 @@ export default function ClientDetailView({
               activeModuleId={activeModuleId}
               setActiveModuleId={setActiveModuleId}
               enabledModules={enabledModules}
+              setEnabledModules={setEnabledModules}
               customTasks={customTasks}
               selectedCustomSignals={selectedCustomSignals}
               selectedSignals={selectedSignals}

@@ -23,6 +23,32 @@ export const formatLastActive = (dateVal?: string | null): string => {
   return str;
 };
 
+// Helper to count enabled service subscriptions from enabled_modules JSONB
+export const getServiceSubscriptionsCount = (c: Customer): number => {
+  const enabled = c.enabled_modules ?? c.enabledModules ?? c.monitoringConfig?.enabledModules;
+  if (!enabled) return 0;
+
+  if (Array.isArray(enabled)) {
+    return enabled.filter(Boolean).length;
+  }
+
+  if (typeof enabled === 'object') {
+    return Object.values(enabled).filter(Boolean).length;
+  }
+
+  if (typeof enabled === 'string') {
+    try {
+      const parsed = JSON.parse(enabled);
+      if (Array.isArray(parsed)) return parsed.filter(Boolean).length;
+      if (typeof parsed === 'object' && parsed !== null) {
+        return Object.values(parsed).filter(Boolean).length;
+      }
+    } catch (e) {}
+  }
+
+  return 0;
+};
+
 // Helper to obtain client design statistics dynamically loaded from Supabase PostgreSQL database
 export const getClientMeta = (c: Customer) => {
   let userCount = 0;
@@ -37,9 +63,8 @@ export const getClientMeta = (c: Customer) => {
     // fallback
   }
 
-  // Stable calculation fallback for subscriptions based on real metadata
-  const charSum = (c.company || "").split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-  const subscriptions = (charSum % 3) + 1;
+  // Count active service subscriptions from enabled_modules
+  const subscriptions = getServiceSubscriptionsCount(c);
   const lastActive = formatLastActive(c.last_active ?? c.lastActive);
   const location = c.location || "London, UK";
 

@@ -4,6 +4,30 @@ import { supabase } from "../../../lib/supabase";
 
 const PIPELINE_BASE_URL = import.meta.env.VITE_API_URL;
 
+const isValidUrl = (urlStr: string): boolean => {
+  if (!urlStr || !urlStr.trim()) return false;
+  const trimmed = urlStr.trim();
+  if (/\s/.test(trimmed)) return false;
+
+  try {
+    const urlToTest = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    const parsed = new URL(urlToTest);
+    return Boolean(
+      parsed.hostname &&
+      parsed.hostname.includes('.') &&
+      parsed.hostname.split('.').pop()!.length >= 2
+    );
+  } catch (e) {
+    return false;
+  }
+};
+
+const formatUrl = (url: string): string => {
+  const trimmed = url.trim();
+  if (!trimmed) return trimmed;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+};
+
 interface CustomDataSource {
   id: string;
   client_id: string;
@@ -47,6 +71,7 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
   const [newType, setNewType] = useState<'website' | 'pdf' | 'text'>("website");
   const [textContent, setTextContent] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Delete confirmation
@@ -100,15 +125,40 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
   };
 
   const handleAdd = async () => {
-    if (!newName.trim()) return;
-    if (newType === 'website' && !newUrl.trim()) return;
-    if (newType === 'text' && !textContent.trim()) return;
-    if (newType === 'pdf' && !selectedFile && !newUrl.trim()) return;
+    const errors: Record<string, string> = {};
 
+    if (!newName.trim()) {
+      errors.name = "Source name is required";
+    }
+
+    if (newType === 'website') {
+      if (!newUrl.trim()) {
+        errors.url = "Website URL is required";
+      } else if (!isValidUrl(newUrl)) {
+        errors.url = "Please enter a valid website URL (e.g. https://example.com)";
+      }
+    } else if (newType === 'text') {
+      if (!textContent.trim()) {
+        errors.text = "Text content is required";
+      }
+    } else if (newType === 'pdf') {
+      if (!selectedFile && !newUrl.trim()) {
+        errors.pdf = "Please upload a PDF file or provide a hosted PDF URL";
+      } else if (!selectedFile && newUrl.trim() && !isValidUrl(newUrl)) {
+        errors.pdfUrl = "Please enter a valid PDF URL (e.g. https://example.com/document.pdf)";
+      }
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFormErrors(errors);
+      return;
+    }
+
+    setFormErrors({});
     setIsSubmitting(true);
     try {
       let storagePath = null;
-      let finalUrl = newUrl;
+      let finalUrl = newUrl.trim() ? formatUrl(newUrl) : null;
 
       // Handle PDF upload
       if (newType === 'pdf' && selectedFile) {
@@ -128,7 +178,7 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
         .from('custom_data_sources')
         .insert([{
           client_id: selectedClientId,
-          source_name: newName,
+          source_name: newName.trim(),
           source_type: newType,
           url_or_path: newType === 'text' ? null : finalUrl,
           storage_path: storagePath,
@@ -143,6 +193,7 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
       setNewType("website");
       setTextContent("");
       setSelectedFile(null);
+      setFormErrors({});
       setShowAddForm(false);
 
       // Refresh list
@@ -439,17 +490,34 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
           <div className="bg-slate-50 border border-[#e2e8f0] rounded-[6px] p-4 space-y-4 animate-in slide-in-from-top-2 duration-300">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="space-y-1.5">
-                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">Source Name</label>
+                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                  Source Name <span className="text-red-500">*</span>
+                </label>
                 <input
                   type="text"
                   value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
+                  onChange={(e) => {
+                    setNewName(e.target.value);
+                    if (formErrors.name) setFormErrors(prev => ({ ...prev, name: undefined }));
+                  }}
                   placeholder="e.g. Corporate Blog"
-                  className="w-full px-3 py-2 bg-white border border-[#e2e8f0] rounded-[6px] text-[12px] font-medium text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  className={`w-full px-3 py-2 bg-white border rounded-[6px] text-[12px] font-medium text-slate-700 outline-none transition-colors ${
+                    formErrors.name
+                      ? "border-red-400 focus:border-red-500 focus:ring-1 focus:ring-red-500 bg-red-50/20"
+                      : "border-[#e2e8f0] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  }`}
                 />
+                {formErrors.name && (
+                  <p className="text-[10px] text-red-500 font-semibold flex items-center gap-1 mt-1">
+                    <AlertCircle className="h-3 w-3 inline shrink-0" />
+                    {formErrors.name}
+                  </p>
+                )}
               </div>
               <div className="space-y-1.5">
-                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">Source Type</label>
+                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                  Source Type <span className="text-red-500">*</span>
+                </label>
                 <select
                   value={newType}
                   onChange={(e) => {
@@ -457,6 +525,7 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
                     setSelectedFile(null);
                     setNewUrl("");
                     setTextContent("");
+                    setFormErrors({});
                   }}
                   className="w-full px-3 py-2 bg-white border border-[#e2e8f0] rounded-[6px] text-[12px] font-medium text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                 >
@@ -468,24 +537,45 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
 
               {newType === 'website' && (
                 <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">URL / Path</label>
+                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                    URL / Path <span className="text-red-500">*</span>
+                  </label>
                   <input
                     type="text"
                     value={newUrl}
-                    onChange={(e) => setNewUrl(e.target.value)}
+                    onChange={(e) => {
+                      setNewUrl(e.target.value);
+                      if (formErrors.url) setFormErrors(prev => ({ ...prev, url: undefined }));
+                    }}
                     placeholder="https://example.com/data"
-                    className="w-full px-3 py-2 bg-white border border-[#e2e8f0] rounded-[6px] text-[12px] font-medium text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    className={`w-full px-3 py-2 bg-white border rounded-[6px] text-[12px] font-medium text-slate-700 outline-none transition-colors ${
+                      formErrors.url
+                        ? "border-red-400 focus:border-red-500 focus:ring-1 focus:ring-red-500 bg-red-50/20"
+                        : "border-[#e2e8f0] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    }`}
                   />
+                  {formErrors.url && (
+                    <p className="text-[10px] text-red-500 font-semibold flex items-center gap-1 mt-1">
+                      <AlertCircle className="h-3 w-3 inline shrink-0" />
+                      {formErrors.url}
+                    </p>
+                  )}
                 </div>
               )}
 
               {newType === 'pdf' && (
                 <div className="md:col-span-1 space-y-1.5">
-                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">Upload PDF</label>
+                  <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                    Upload PDF <span className="text-red-500">*</span>
+                  </label>
                   <div className="flex gap-2">
                     <button
                       onClick={() => fileInputRef.current?.click()}
-                      className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-white border border-dashed border-[#e2e8f0] hover:border-indigo-400 rounded-[6px] text-[11px] font-bold text-slate-600 hover:text-indigo-600 transition-all cursor-pointer"
+                      className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-white border border-dashed rounded-[6px] text-[11px] font-bold transition-all cursor-pointer ${
+                        formErrors.pdf
+                          ? "border-red-400 text-red-600 hover:border-red-500 bg-red-50/20"
+                          : "border-[#e2e8f0] hover:border-indigo-400 text-slate-600 hover:text-indigo-600"
+                      }`}
                     >
                       <Upload className="h-3.5 w-3.5" />
                       {selectedFile ? selectedFile.name : "Upload a file"}
@@ -495,9 +585,23 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
                       type="file"
                       accept=".pdf"
                       className="hidden"
-                      onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] || null;
+                        setSelectedFile(file);
+                        if (file && !newName.trim()) {
+                          const defaultName = file.name.replace(/\.[^/.]+$/, "");
+                          setNewName(defaultName);
+                        }
+                        setFormErrors(prev => ({ ...prev, pdf: undefined, name: undefined }));
+                      }}
                     />
                   </div>
+                  {formErrors.pdf && (
+                    <p className="text-[10px] text-red-500 font-semibold flex items-center gap-1 mt-1">
+                      <AlertCircle className="h-3 w-3 inline shrink-0" />
+                      {formErrors.pdf}
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -514,22 +618,52 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
                   type="text"
                   value={newUrl}
                   disabled={!!selectedFile}
-                  onChange={(e) => setNewUrl(e.target.value)}
+                  onChange={(e) => {
+                    setNewUrl(e.target.value);
+                    if (formErrors.pdf || formErrors.pdfUrl) {
+                      setFormErrors(prev => ({ ...prev, pdf: undefined, pdfUrl: undefined }));
+                    }
+                  }}
                   placeholder="https://example.com/document.pdf"
-                  className="w-full px-3 py-2 bg-white border border-[#e2e8f0] rounded-[6px] text-[12px] font-medium text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:bg-slate-100 disabled:cursor-not-allowed"
+                  className={`w-full px-3 py-2 bg-white border rounded-[6px] text-[12px] font-medium text-slate-700 outline-none transition-colors disabled:bg-slate-100 disabled:cursor-not-allowed ${
+                    formErrors.pdfUrl
+                      ? "border-red-400 focus:border-red-500 focus:ring-1 focus:ring-red-500 bg-red-50/20"
+                      : "border-[#e2e8f0] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  }`}
                 />
+                {formErrors.pdfUrl && (
+                  <p className="text-[10px] text-red-500 font-semibold flex items-center gap-1 mt-1">
+                    <AlertCircle className="h-3 w-3 inline shrink-0" />
+                    {formErrors.pdfUrl}
+                  </p>
+                )}
               </div>
             )}
 
             {newType === 'text' && (
               <div className="space-y-1.5">
-                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider">Paste Text Content</label>
+                <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                  Paste Text Content <span className="text-red-500">*</span>
+                </label>
                 <textarea
                   value={textContent}
-                  onChange={(e) => setTextContent(e.target.value)}
+                  onChange={(e) => {
+                    setTextContent(e.target.value);
+                    if (formErrors.text) setFormErrors(prev => ({ ...prev, text: undefined }));
+                  }}
                   placeholder="Paste relevant text content here..."
-                  className="w-full h-32 px-3 py-2 bg-white border border-[#e2e8f0] rounded-[6px] text-[12px] font-medium text-slate-700 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 resize-none"
+                  className={`w-full h-32 px-3 py-2 bg-white border rounded-[6px] text-[12px] font-medium text-slate-700 outline-none resize-none transition-colors ${
+                    formErrors.text
+                      ? "border-red-400 focus:border-red-500 focus:ring-1 focus:ring-red-500 bg-red-50/20"
+                      : "border-[#e2e8f0] focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  }`}
                 />
+                {formErrors.text && (
+                  <p className="text-[10px] text-red-500 font-semibold flex items-center gap-1 mt-1">
+                    <AlertCircle className="h-3 w-3 inline shrink-0" />
+                    {formErrors.text}
+                  </p>
+                )}
               </div>
             )}
 
@@ -538,6 +672,7 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
                 onClick={() => {
                   setShowAddForm(false);
                   setSelectedFile(null);
+                  setFormErrors({});
                 }}
                 disabled={isSubmitting}
                 className="px-4 py-2 text-[11px] font-bold text-slate-600 hover:text-slate-800 cursor-pointer disabled:opacity-50"

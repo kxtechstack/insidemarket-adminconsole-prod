@@ -39,6 +39,8 @@ export interface Customer {
   description?: string;
   location?: string;
   customDataSources?: { id: string; name: string; url: string; type: string }[];
+  enabled_modules?: any;
+  enabledModules?: any;
   monitoringConfig?: {
     enabledModules: string[];
     selectedSignals: Record<string, string[]>;

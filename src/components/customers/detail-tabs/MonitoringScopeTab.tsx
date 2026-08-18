@@ -97,7 +97,7 @@ export const MonitoringScopeTab: React.FC<MonitoringScopeTabProps> = ({
         
         <div className="flex-1 min-h-0 p-1.5 space-y-1 overflow-y-auto">
           {allModules.map((module) => {
-            const isEnabled = enabledModules[module.id] !== false;
+            const isEnabled = Boolean(enabledModules[module.id]);
             const isActive = activeModuleId === module.id;
             const isCustom = module.id === 'custom_tasks';
             const selectedCount = isCustom
@@ -167,7 +167,7 @@ export const MonitoringScopeTab: React.FC<MonitoringScopeTabProps> = ({
         <div className="p-3 border-t border-[#e2e8f0] bg-slate-50/80">
           <h4 className="text-[11px] font-bold text-slate-900 tracking-wider mb-2 uppercase">Active Summary</h4>
           <div className="space-y-1.5">
-            {allModules.filter(m => enabledModules[m.id] !== false).map(m => {
+            {allModules.filter(m => Boolean(enabledModules[m.id])).map(m => {
               const isCustom = m.id === 'custom_tasks';
               const count = isCustom
                 ? (customTasks[selectedClientId] || []).reduce((acc, task) => acc + (selectedCustomSignals[task.id]?.length || 0), 0)
@@ -179,14 +179,14 @@ export const MonitoringScopeTab: React.FC<MonitoringScopeTabProps> = ({
                 </div>
               );
             })}
-            {allModules.filter(m => enabledModules[m.id] !== false).length === 0 && (
+            {allModules.filter(m => Boolean(enabledModules[m.id])).length === 0 && (
               <p className="text-[11px] text-slate-500">No modules enabled</p>
             )}
             <div className="pt-2 mt-2 border-t border-slate-100 flex justify-between items-center">
               <span className="text-[11px] font-bold text-slate-900">Total active signals</span>
               <span className="text-[13px] font-bold text-indigo-600">
                 {allModules
-                  .filter(m => enabledModules[m.id] !== false)
+                  .filter(m => Boolean(enabledModules[m.id]))
                   .reduce((total, m) => {
                     const isCustom = m.id === 'custom_tasks';
                     const count = isCustom
@@ -214,7 +214,7 @@ export const MonitoringScopeTab: React.FC<MonitoringScopeTabProps> = ({
               
               if (!module) return null;
 
-              const isEnabled = enabledModules[module.id] !== false;
+              const isEnabled = Boolean(enabledModules[module.id]);
               const totalSelected = isCustom
                 ? (customTasks[selectedClientId] || []).reduce((acc, task) => acc + (selectedCustomSignals[task.id]?.length || 0), 0)
                 : module.categories.reduce((acc, cat) => acc + (selectedSignals[cat.id]?.length || 0), 0);

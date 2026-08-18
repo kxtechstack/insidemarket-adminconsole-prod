@@ -144,7 +144,19 @@ export default function App() {
           sectorsToEnter: "",
           designations: toStringList(rawDesignations),
           description: client.client_description || "",
-          location: client.location || ""
+          location: client.location || "",
+          enabled_modules: client.enabled_modules ?? [],
+          enabledModules: client.enabled_modules ?? [],
+          monitoringConfig: {
+            enabledModules: Array.isArray(client.enabled_modules)
+              ? client.enabled_modules
+              : (client.enabled_modules && typeof client.enabled_modules === 'object'
+                  ? Object.keys(client.enabled_modules).filter(k => client.enabled_modules[k])
+                  : []),
+            selectedSignals: {},
+            customTasks: [],
+            selectedCustomSignals: {}
+          }
         };
       });
 
@@ -191,7 +203,8 @@ export default function App() {
         company_name: newCustPayload.company || newCustPayload.name,
         industry: newCustPayload.sector,
         location: newCustPayload.location || "London, UK",
-        client_description: newCustPayload.description || ""
+        client_description: newCustPayload.description || "",
+        enabled_modules: []
       };
       
       const { data: newClientData, error: insertClientError } = await supabase.schema('admin')
@@ -228,6 +241,9 @@ export default function App() {
 
   const handleUpdateCustomer = async (id: string, updatedPayload: Partial<Customer>) => {
     try {
+      // Immediately reflect updates in local state for seamless UI reactivity
+      setCustomers(prev => prev.map(c => c.id === id ? { ...c, ...updatedPayload } : c));
+
       // Update clients table
       const clientsUpdate: any = {};
       if (updatedPayload.company !== undefined) clientsUpdate.company_name = updatedPayload.company;
@@ -235,6 +251,13 @@ export default function App() {
       if (updatedPayload.location !== undefined) clientsUpdate.location = updatedPayload.location;
       if (updatedPayload.description !== undefined) clientsUpdate.client_description = updatedPayload.description;
       if (updatedPayload.status !== undefined) clientsUpdate.status = updatedPayload.status;
+      if (updatedPayload.enabled_modules !== undefined) {
+        clientsUpdate.enabled_modules = updatedPayload.enabled_modules;
+      } else if (updatedPayload.enabledModules !== undefined) {
+        clientsUpdate.enabled_modules = updatedPayload.enabledModules;
+      } else if (updatedPayload.monitoringConfig?.enabledModules !== undefined) {
+        clientsUpdate.enabled_modules = updatedPayload.monitoringConfig.enabledModules;
+      }
 
       if (Object.keys(clientsUpdate).length > 0) {
         await supabase.schema('admin').from("clients").update(clientsUpdate).eq("id", id);

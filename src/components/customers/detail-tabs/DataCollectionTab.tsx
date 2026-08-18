@@ -26,6 +26,7 @@ interface DataCollectionTabProps {
   activeModuleId: string;
   setActiveModuleId: (id: string) => void;
   enabledModules: Record<string, boolean>;
+  setEnabledModules?: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   customTasks: Record<string, any[]>;
   selectedCustomSignals: Record<string, string[]>;
   selectedSignals: Record<string, string[]>;
@@ -72,6 +73,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
   activeModuleId,
   setActiveModuleId,
   enabledModules,
+  setEnabledModules,
   customTasks,
   selectedCustomSignals,
   selectedSignals,
@@ -697,8 +699,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       const insertData: any = {
         client_id: selectedClientId,
         prompt_text: newPromptText,
-        status: 'Running',
-        last_run: new Date().toISOString()
+        status: 'Running'
       };
 
       if (isCustomModule) {
@@ -803,7 +804,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
         
         <div className="flex-1 min-h-0 p-1.5 space-y-1 overflow-y-auto">
           {allModules.map((module) => {
-            const isEnabled = enabledModules[module.id] !== false;
+            const isEnabled = Boolean(enabledModules[module.id]);
             const isActive = activeModuleId === module.id;
             const isCustom = module.id === 'custom_tasks';
             const selectedCount = isCustom
@@ -849,6 +850,22 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                       {selectedCount}
                     </span>
                   )}
+                  {setEnabledModules && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEnabledModules(prev => ({ ...prev, [module.id]: !isEnabled }));
+                      }}
+                      className={`relative inline-flex h-4 w-7 items-center shrink-0 cursor-pointer rounded-full transition-all duration-300 ${
+                        isEnabled ? "bg-black" : "bg-slate-300"
+                      }`}
+                    >
+                      <span className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white transition duration-300 ease-in-out ${
+                        isEnabled ? "translate-x-3.5" : "translate-x-0.5"
+                      }`} />
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -859,7 +876,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
         <div className="p-3 border-t border-[#e2e8f0] bg-slate-50/80">
           <h4 className="text-[11px] font-bold text-slate-900 tracking-wider mb-2 uppercase">Active Summary</h4>
           <div className="space-y-1.5">
-            {allModules.filter(m => enabledModules[m.id] !== false).map(m => {
+            {allModules.filter(m => Boolean(enabledModules[m.id])).map(m => {
               const isCustom = m.id === 'custom_tasks';
               const count = isCustom
                 ? (customTasks[selectedClientId] || []).reduce((acc, task) => acc + (selectedCustomSignals[task.id]?.length || 0), 0)
@@ -871,14 +888,14 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                 </div>
               );
             })}
-            {allModules.filter(m => enabledModules[m.id] !== false).length === 0 && (
+            {allModules.filter(m => Boolean(enabledModules[m.id])).length === 0 && (
               <p className="text-[11px] text-slate-500">No modules enabled</p>
             )}
             <div className="pt-2 mt-2 border-t border-slate-100 flex justify-between items-center">
               <span className="text-[11px] font-bold text-slate-900">Total active signals</span>
               <span className="text-[13px] font-bold text-indigo-600">
                 {allModules
-                  .filter(m => enabledModules[m.id] !== false)
+                  .filter(m => Boolean(enabledModules[m.id]))
                   .reduce((total, m) => {
                     const isCustom = m.id === 'custom_tasks';
                     const count = isCustom
@@ -897,7 +914,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       <div className="flex-1 flex flex-col bg-slate-50/10 min-w-0">
         {allModules.map((module) => {
           if (activeModuleId !== module.id) return null;
-          const isEnabled = enabledModules[module.id] !== false;
+          const isEnabled = Boolean(enabledModules[module.id]);
           return (
             <div key={module.id} className="flex flex-col h-full overflow-hidden">
               {/* Pane Header */}
@@ -1218,7 +1235,12 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                       Enable the toggle next to <strong className="text-slate-800">{module.label}</strong> in the Monitoring Scope panel to activate signal tracking and start configuring collection.
                     </p>
                     <button
-                      onClick={() => setActiveDetailTab('scope')}
+                      onClick={() => {
+                        if (setEnabledModules) {
+                          setEnabledModules(prev => ({ ...prev, [module.id]: true }));
+                        }
+                        setActiveDetailTab('scope');
+                      }}
                       className="bg-slate-600 hover:bg-slate-700 text-white text-[13px] font-bold py-2.5 px-8 rounded-[6px] transition-all active:scale-95 shadow-sm"
                     >
                       Enable {module.label}
@@ -1428,10 +1450,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                                 <span>Failed</span>
                                               </span>
                                             ) : effectiveStatus.status === 'running' ? (
-                                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] border border-yellow-200/50 bg-yellow-50 text-yellow-700 font-bold text-[9.5px] leading-tight select-none">
-                                                <span className="animate-spin text-yellow-600 inline-block font-sans">↻</span>
-                                                <span>Running</span>
-                                              </span>
+                                              null
                                             ) : (
                                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] border border-slate-200/50 bg-slate-50 text-slate-500 font-bold text-[9.5px] leading-tight select-none">
                                                 <span>{effectiveStatus.status}</span>
@@ -1474,7 +1493,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                         <span>Last edited:</span>
                                         <span className="text-slate-800 font-semibold">{currentLastEdited}</span>
                                         <span className="text-slate-300 select-none">•</span>
-                                        {(!promptStatus || promptStatus.hasRun === false) ? (
+                                        {(!promptStatus?.hasRun) ? (
                                           <span className="inline-flex items-center gap-1 text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded-[4px] font-bold text-[9.5px] border border-slate-200/50">
                                             <span>Never Run</span>
                                           </span>
@@ -1487,9 +1506,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                           <span className="inline-flex items-center gap-1 text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-[4px] font-bold text-[9.5px] border border-emerald-100/50">
                                             <span className="text-emerald-500 font-sans font-bold">✓</span>
                                             <span>
-                                              {promptStatus.formattedDate !== undefined 
-                                                ? promptStatus.formattedDate
-                                                : (moduleLastRan[selectedClientId]?.[prompt.id] || "Last run 12h ago")}
+                                              {promptStatus.formattedDate || moduleLastRan[selectedClientId]?.[prompt.id]}
                                             </span>
                                           </span>
                                         )}
