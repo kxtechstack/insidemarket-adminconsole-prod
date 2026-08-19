@@ -297,12 +297,195 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
         .eq('client_id', selectedClientId);
       
       if (error) throw error;
-      setDbPrompts(data || []);
+      const promptsData = data || [];
+      setDbPrompts(promptsData);
+      fetchSubmoduleSchedules(promptsData);
     } catch (err) {
       console.error("Error fetching prompts:", err);
     } finally {
       loadingStatusFetched.current = true;
       setLoading(false);
+    }
+  };
+
+  const [savingSchedulePromptId, setSavingSchedulePromptId] = React.useState<string | null>(null);
+
+  const fetchSingleSchedule = async (submoduleId: string, promptId: string) => {
+    if (!selectedClientId || !submoduleId) return;
+    try {
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/schedules/${selectedClientId}/${submoduleId}`);
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json?.schedule) {
+        const { source, frequency, schedule_time, is_active } = json.schedule;
+        const formattedTime = schedule_time
+          ? (schedule_time.length >= 5 ? schedule_time.slice(0, 5) : schedule_time)
+          : '02:00';
+        const schedObj = {
+          tool: source || 'Exa',
+          frequency: frequency || 'Daily',
+          time: formattedTime,
+          isActive: is_active ?? true
+        };
+        setModuleSchedules(prev => ({
+          ...prev,
+          [selectedClientId]: {
+            ...(prev[selectedClientId] || {}),
+            [promptId]: schedObj,
+            [submoduleId]: schedObj
+          }
+        }));
+        setTempSchedule(prev => prev ? {
+          ...prev,
+          tool: source || prev.tool,
+          frequency: frequency || prev.frequency,
+          time: formattedTime
+        } : {
+          tool: source || 'Perplexity',
+          frequency: frequency || 'Daily',
+          time: formattedTime
+        });
+      }
+    } catch (e) {
+      console.warn(`Error fetching schedule for ${submoduleId}:`, e);
+    }
+  };
+
+  const fetchSubmoduleSchedules = async (promptsList: any[]) => {
+    if (!selectedClientId || !promptsList.length) return;
+
+    const uniqueItems = Array.from(
+      new Map(
+        promptsList
+          .filter(p => !!(p.submodule_id || p.custom_task_id))
+          .map(p => [p.submodule_id || p.custom_task_id, { promptId: p.id, submoduleId: p.submodule_id || p.custom_task_id }])
+      ).values()
+    );
+
+    try {
+      const results = await Promise.allSettled(
+        uniqueItems.map(async ({ promptId, submoduleId }) => {
+          try {
+            const res = await fetch(`${import.meta.env.VITE_API_URL}/schedules/${selectedClientId}/${submoduleId}`);
+            if (!res.ok) return null;
+            const json = await res.json();
+            if (json?.schedule) {
+              return { promptId, submoduleId, schedule: json.schedule };
+            }
+          } catch (e) {
+            console.warn(`Failed to fetch schedule for ${submoduleId}:`, e);
+          }
+          return null;
+        })
+      );
+
+      const newSchedules: Record<string, any> = {};
+      results.forEach(r => {
+        if (r.status === 'fulfilled' && r.value) {
+          const { promptId, submoduleId, schedule } = r.value;
+          const formattedTime = schedule.schedule_time
+            ? (schedule.schedule_time.length >= 5 ? schedule.schedule_time.slice(0, 5) : schedule.schedule_time)
+            : '02:00';
+          const schedObj = {
+            tool: schedule.source || 'Perplexity',
+            frequency: schedule.frequency || 'Daily',
+            time: formattedTime,
+            isActive: schedule.is_active ?? true
+          };
+          newSchedules[promptId] = schedObj;
+          newSchedules[submoduleId] = schedObj;
+        }
+      });
+
+      if (Object.keys(newSchedules).length > 0) {
+        setModuleSchedules(prev => ({
+          ...prev,
+          [selectedClientId]: {
+            ...(prev[selectedClientId] || {}),
+            ...newSchedules
+          }
+        }));
+      }
+    } catch (err) {
+      console.error("Error loading submodule schedules:", err);
+    }
+  };
+
+  const handleSaveSchedule = async (
+    promptId: string,
+    submoduleId: string,
+    moduleId: string,
+    source: string,
+    promptText: string,
+    frequency: string,
+    scheduleTime: string
+  ) => {
+    setSavingSchedulePromptId(promptId);
+
+    // Immediate UI feedback update
+    const scheduleObj = {
+      tool: source,
+      frequency,
+      time: scheduleTime,
+      isActive: true
+    };
+
+    setModuleSchedules(prev => ({
+      ...prev,
+      [selectedClientId]: {
+        ...(prev[selectedClientId] || {}),
+        [promptId]: scheduleObj,
+        [submoduleId]: scheduleObj
+      }
+    }));
+
+    try {
+      let industry = editSector;
+      if (!industry) {
+        const { data: clientData } = await supabase
+          .schema('admin')
+          .from('clients')
+          .select('industry')
+          .eq('id', selectedClientId)
+          .single();
+        industry = clientData?.industry || 'Unknown';
+      }
+
+      const payload = {
+        clientId: selectedClientId,
+        submoduleId,
+        moduleId,
+        source,
+        promptText,
+        industry: industry || 'Unknown',
+        frequency,
+        scheduleTime,
+        isActive: true
+      };
+
+      const res = await fetch(`${import.meta.env.VITE_API_URL}/schedules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        let errMsg = `Failed to save schedule (${res.status})`;
+        try {
+          const errJson = await res.json();
+          if (errJson.error || errJson.message) errMsg = errJson.error || errJson.message;
+        } catch (_) {}
+        throw new Error(errMsg);
+      }
+
+      showToast("Schedule configuration saved successfully", 'success');
+      setShowHistoryModuleId(null);
+      setTempSchedule(null);
+    } catch (err: any) {
+      console.error("Error saving schedule to backend:", err);
+      showToast(err.message || "Failed to save schedule to backend", 'error');
+    } finally {
+      setSavingSchedulePromptId(null);
     }
   };
 
@@ -435,16 +618,11 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
           return;
         }
         
-        let anyRunning = false;
-        
         if (isMounted && data) {
           const statusMap: Record<string, any> = {};
           
           data.forEach(job => {
             const subId = job.submodule_id;
-            if (job.status === 'running') {
-              anyRunning = true;
-            }
             if (!subId || statusMap[subId]) return; // already have latest for this sub
 
             const timestamp = job.completed_at || job.updated_at || job.started_at;
@@ -483,13 +661,14 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
             });
             return updated;
           });
-        }
-        
-        if (isMounted && anyRunning) {
-          timerId = setTimeout(fetchStatus, 3000);
+          fetchArticleLogs();
         }
       } catch (e) {
         console.error(e);
+      } finally {
+        if (isMounted) {
+          timerId = setTimeout(fetchStatus, 5000);
+        }
       }
     };
 
@@ -1374,15 +1553,12 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                         const currentLastEdited = prompt.lastEdited;
 
                         const promptStatus = {
-                          ...clientStatusBySubmodule[prompt.submoduleId],
-                          ...pipelineStatuses[prompt.id]
+                          ...pipelineStatuses[prompt.id],
+                          ...clientStatusBySubmodule[prompt.submoduleId]
                         };
                         const promptLogs = articleLogsBySubmodule[prompt.submoduleId] || [];
 
-                        const effectiveStatus = {
-                          ...promptStatus,
-                          ...pipelineStatuses[prompt.id]
-                        };
+                        const effectiveStatus = promptStatus;
 
                         return (
                           <div key={prompt.id} className="space-y-3 mb-6 last:mb-0">
@@ -1539,6 +1715,9 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                               time: currentSched.time
                                             });
                                             setShowHistoryModuleId(prompt.id);
+                                            if (prompt.submoduleId) {
+                                              fetchSingleSchedule(prompt.submoduleId, prompt.id);
+                                            }
                                           }
                                         }}
                                         className={`p-1 transition-colors cursor-pointer rounded ${showHistoryModuleId === prompt.id ? "text-indigo-600 bg-indigo-50/80" : "text-slate-400 hover:text-indigo-600"}`}
@@ -1622,8 +1801,8 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                      const activeTime = tempSchedule ? tempSchedule.time : currentSched.time;
 
                                      const promptStatus = {
-                                       ...clientStatusBySubmodule[prompt.submoduleId],
-                                       ...pipelineStatuses[prompt.id]
+                                       ...pipelineStatuses[prompt.id],
+                                       ...clientStatusBySubmodule[prompt.submoduleId]
                                      };
                                      const promptLogs = articleLogsBySubmodule[prompt.submoduleId] || [];
 
@@ -1710,48 +1889,39 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                             </div>
                                             <div className="flex gap-2.5 items-center">
                                               <div className="relative flex-1">
-                                                <div className="w-full px-3 py-2 bg-white border border-slate-200 text-xs font-semibold text-slate-700 rounded-[6px] flex items-center justify-between min-h-[38px] hover:border-slate-300 transition-all cursor-pointer">
-                                                  <span>{activeTime}</span>
-                                                  <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
-                                                </div>
-                                                <select
-                                                  value={activeTime}
+                                                <input
+                                                  type="time"
+                                                  value={activeTime ? (activeTime.length > 5 ? activeTime.slice(0, 5) : activeTime) : "02:00"}
                                                   onChange={(e) => {
                                                     const val = e.target.value;
                                                     setTempSchedule(prev => prev ? { ...prev, time: val } : { tool: activeTool, frequency: activeFrequency, time: val });
                                                   }}
-                                                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer text-xs"
-                                                >
-                                                  {hoursArray.map(h => (
-                                                    <option key={h.value} value={h.value}>{h.label}</option>
-                                                  ))}
-                                                </select>
+                                                  className="w-full px-3 py-2 bg-white border border-slate-200 text-xs font-semibold text-slate-700 rounded-[6px] min-h-[38px] hover:border-slate-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all outline-none"
+                                                />
                                               </div>
 
                                               {/* Action Buttons Group */}
                                               <div className="flex gap-1.5 shrink-0">
                                                 <button
                                                   type="button"
-                                                  onClick={() => {
-                                                    setModuleSchedules(prev => ({
-                                                      ...prev,
-                                                      [selectedClientId]: {
-                                                        ...(prev[selectedClientId] || {}),
-                                                        [prompt.id]: {
-                                                          ...currentSched,
-                                                          tool: activeTool,
-                                                          frequency: activeFrequency,
-                                                          time: activeTime
-                                                        }
-                                                      }
-                                                    }));
-                                                    setShowHistoryModuleId(null);
-                                                    setTempSchedule(null);
-                                                  }}
-                                                  className="flex items-center justify-center h-[38px] w-[38px] bg-indigo-50 border border-indigo-200 text-indigo-600 rounded-[6px] cursor-pointer hover:bg-indigo-100 transition-colors shadow-xs active:scale-95"
+                                                  disabled={savingSchedulePromptId === prompt.id}
+                                                  onClick={() => handleSaveSchedule(
+                                                    prompt.id,
+                                                    prompt.submoduleId,
+                                                    prompt.moduleId,
+                                                    activeTool,
+                                                    prompt.content,
+                                                    activeFrequency,
+                                                    activeTime
+                                                  )}
+                                                  className="flex items-center justify-center h-[38px] w-[38px] bg-indigo-50 border border-indigo-200 text-indigo-600 rounded-[6px] cursor-pointer hover:bg-indigo-100 transition-colors shadow-xs active:scale-95 disabled:opacity-50"
                                                   title="Save APISchedule"
                                                 >
-                                                  <Save className="h-4 w-4" />
+                                                  {savingSchedulePromptId === prompt.id ? (
+                                                    <span className="animate-spin text-indigo-600 font-sans font-bold inline-block">↻</span>
+                                                  ) : (
+                                                    <Save className="h-4 w-4" />
+                                                  )}
                                                 </button>
 
                                                 <button
