@@ -651,16 +651,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
             };
           });
 
-          setClientStatusBySubmodule(prev => {
-            const updated = { ...statusMap };
-            // If any submodule is currently marked as running in local state, preserve its active live state
-            Object.keys(prev).forEach(subId => {
-              if (prev[subId]?.status === 'running' && updated[subId]?.status !== 'running') {
-                updated[subId] = prev[subId];
-              }
-            });
-            return updated;
-          });
+          setClientStatusBySubmodule(statusMap);
           fetchArticleLogs();
         }
       } catch (e) {
