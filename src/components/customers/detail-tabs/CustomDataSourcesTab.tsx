@@ -242,7 +242,7 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
 
       setConfirmDeleteId(null);
       fetchSources();
-      showToast("Data source deleted");
+      showToast(sourceToDelete?.source_name ? `Data source "${sourceToDelete.source_name}" deleted` : "Data source deleted");
     } catch (err: any) {
       console.error("Error deleting source:", err);
       showToast(err.message || "Failed to delete source", 'error');
@@ -250,6 +250,9 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
   };
 
   const handleRunNow = async (id: string) => {
+    const targetSource = sources.find(s => s.id === id);
+    const sourceName = targetSource?.source_name || 'Data source';
+
     // Mark this source as running (shows spinner on its button)
     setRunningIds(prev => new Set(prev).add(id));
 
@@ -267,7 +270,7 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
       // source row every few seconds until last_run_at changes, so the
       // button can flip to a green tick (or error icon) once it's done.
       pollForCompletion(id);
-      showToast("Pipeline job started successfully");
+      showToast(`Started pipeline run for "${sourceName}". Processing in background...`);
     } catch (err: any) {
       console.error("Error triggering run:", err);
       setRunningIds(prev => {
@@ -315,6 +318,18 @@ export const CustomDataSourcesTab: React.FC<CustomDataSourcesTabProps> = ({
             next.delete(id);
             return next;
           });
+
+          // Automatically expand Previously Run Sources so user sees the completed item
+          setIsRunSourcesExpanded(true);
+
+          const sourceName = data.source_name || source?.source_name || 'Data source';
+          if (data.last_run_status === 'success') {
+            showToast(`Processing completed for "${sourceName}". Moved to Previously Run Sources.`, 'success');
+          } else if (data.last_run_status === 'failed') {
+            showToast(`Processing finished with errors for "${sourceName}". Moved to Previously Run Sources.`, 'error');
+          } else {
+            showToast(`Execution finished for "${sourceName}". Moved to Previously Run Sources.`, 'success');
+          }
         } else {
           pollForCompletion(id, attempt + 1);
         }
