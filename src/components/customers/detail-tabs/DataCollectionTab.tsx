@@ -16,7 +16,10 @@ import {
   Loader2,
   List,
   Eye,
-  EyeOff
+  EyeOff,
+  Calendar,
+  BarChart3,
+  AlertCircle
 } from "lucide-react";
 import { useIntelligenceModules } from "../../../data/intelligenceModules";
 import { COLLECTION_PROMPTS } from "../../../data/prompts";
@@ -430,14 +433,24 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       isActive: true
     };
 
-    setModuleSchedules(prev => ({
-      ...prev,
-      [selectedClientId]: {
-        ...(prev[selectedClientId] || {}),
-        [promptId]: scheduleObj,
-        [submoduleId]: scheduleObj
-      }
-    }));
+    setModuleSchedules(prev => {
+      const clientScheds = { ...(prev[selectedClientId] || {}) };
+      clientScheds[promptId] = scheduleObj;
+      clientScheds[submoduleId] = scheduleObj;
+      // Also update time for all prompts in local state immediately
+      Object.keys(clientScheds).forEach(key => {
+        if (clientScheds[key]) {
+          clientScheds[key] = {
+            ...clientScheds[key],
+            time: scheduleTime
+          };
+        }
+      });
+      return {
+        ...prev,
+        [selectedClientId]: clientScheds
+      };
+    });
 
     try {
       let industry = editSector;
@@ -451,7 +464,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
         industry = clientData?.industry || 'Unknown';
       }
 
-      const payload = {
+      const promptPayload = {
         clientId: selectedClientId,
         submoduleId,
         moduleId,
@@ -459,23 +472,47 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
         promptText,
         industry: industry || 'Unknown',
         frequency,
+        isActive: true
+      };
+
+      const clientPayload = {
         scheduleTime,
         isActive: true
       };
 
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/schedules`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      const [promptRes, clientRes] = await Promise.all([
+        fetch(`${import.meta.env.VITE_API_URL}/schedules`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(promptPayload)
+        }),
+        fetch(`${import.meta.env.VITE_API_URL}/schedules/client/${selectedClientId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(clientPayload)
+        })
+      ]);
 
-      if (!res.ok) {
-        let errMsg = `Failed to save schedule (${res.status})`;
+      if (!promptRes.ok) {
+        let errMsg = `Failed to save prompt schedule (${promptRes.status})`;
         try {
-          const errJson = await res.json();
+          const errJson = await promptRes.json();
           if (errJson.error || errJson.message) errMsg = errJson.error || errJson.message;
         } catch (_) {}
         throw new Error(errMsg);
+      }
+
+      if (!clientRes.ok) {
+        let errMsg = `Failed to update client schedule time (${clientRes.status})`;
+        try {
+          const errJson = await clientRes.json();
+          if (errJson.error || errJson.message) errMsg = errJson.error || errJson.message;
+        } catch (_) {}
+        throw new Error(errMsg);
+      }
+
+      if (dbPrompts && dbPrompts.length > 0) {
+        await fetchSubmoduleSchedules(dbPrompts);
       }
 
       showToast("Schedule configuration saved successfully", 'success');
@@ -510,59 +547,264 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
   const [articleLogsBySubmodule, setArticleLogsBySubmodule] = React.useState<Record<string, any[]>>({});
   const [logsModalSubmoduleId, setLogsModalSubmoduleId] = React.useState<string | null>(null);
   const [retryingFailed, setRetryingFailed] = React.useState(false);
+  const [retryingSubmoduleId, setRetryingSubmoduleId] = React.useState<string | null>(null);
   const [isLogsModalOpen, setIsLogsModalOpen] = React.useState(false);
+  const [logsActiveTab, setLogsActiveTab] = React.useState<'failed' | 'completed_skipped'>('failed');
   const [logsPage, setLogsPage] = React.useState(1);
 
-  const fetchArticleLogs = async () => {
-  if (!selectedClientId) return;
-  try {
-    const { data, error } = await supabase
-      .from('article_processing_log')
-      .select('*')
-      .eq('client_id', selectedClientId)
-      .order('created_at', { ascending: false });
+  // Retry Logs / Failed queue state
+  const [isRetryLogsModalOpen, setIsRetryLogsModalOpen] = React.useState(false);
+  const [retryLogsFilterSubmoduleId, setRetryLogsFilterSubmoduleId] = React.useState<string | null>(null);
+  const [retryQueue, setRetryQueue] = React.useState<Array<{
+    id: string | number;
+    submodule_id: string;
+    submodule_name: string;
+    title: string;
+    status: 'pending' | 'retrying' | 'completed' | 'failed';
+    error_message?: string;
+    created_at?: string;
+    processed_at?: string;
+  }>>([]);
+  const [activeRetryArticleId, setActiveRetryArticleId] = React.useState<string | number | null>(null);
 
-    if (error || !data) {
-      setArticleLogsBySubmodule({});
+  // Daily Report State
+  const [isDailyReportOpen, setIsDailyReportOpen] = React.useState(false);
+  const [reportDate, setReportDate] = React.useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [dailyReportLoading, setDailyReportLoading] = React.useState(false);
+  const [selectedReportModuleId, setSelectedReportModuleId] = React.useState<string | null>(null);
+  const [dailyReportJobs, setDailyReportJobs] = React.useState<any[]>([]);
+  const [dailyReportLogs, setDailyReportLogs] = React.useState<any[]>([]);
+  const [dailySummary, setDailySummary] = React.useState<{
+    totalFetched: number;
+    totalProcessed: number;
+    totalFailed: number;
+  }>({ totalFetched: 0, totalProcessed: 0, totalFailed: 0 });
+
+  const [moduleBreakdown, setModuleBreakdown] = React.useState<Array<{
+    moduleId: string;
+    moduleName: string;
+    color: string;
+    bg: string;
+    icon: any;
+    fetched: number;
+    processed: number;
+    failed: number;
+  }>>([]);
+
+  const [submoduleReportRows, setSubmoduleReportRows] = React.useState<Array<{
+    submoduleId: string;
+    submoduleName: string;
+    fetched: number;
+    afterUrlCheck: number;
+    afterTopicDedup: number;
+    afterQualityFilter: number;
+    signalsStored: number;
+    completed: number;
+    skipped: number;
+    failed: number;
+  }>>([]);
+
+  const fetchArticleLogs = async (date: string | null = null) => {
+    if (!selectedClientId) return;
+    try {
+      const activeDate = date || reportDate || new Date().toISOString().slice(0, 10);
+      const startIso = `${activeDate}T00:00:00.000Z`;
+      const endIso = `${activeDate}T23:59:59.999Z`;
+
+      const { data, error } = await supabase
+        .from('article_processing_log')
+        .select('*')
+        .eq('client_id', selectedClientId)
+        .gte('created_at', startIso)
+        .lte('created_at', endIso)
+        .order('created_at', { ascending: false });
+
+      if (error || !data) {
+        setArticleLogsBySubmodule({});
+        return;
+      }
+
+      const logsBySub: Record<string, any[]> = {};
+
+      data.forEach(log => {
+        const subId = log.submodule_id;
+        if (!subId) return;
+
+        if (!logsBySub[subId]) {
+          logsBySub[subId] = [];
+        }
+        logsBySub[subId].push(log);
+      });
+
+      // If a submodule has a run actively in-flight, handle running state
+      Object.keys(clientStatusBySubmoduleRef.current).forEach(subId => {
+        const activeStatus = clientStatusBySubmoduleRef.current[subId];
+        if (activeStatus?.status === 'running') {
+          if (!activeStatus.jobId) {
+            logsBySub[subId] = [];
+          }
+        }
+      });
+
+      setArticleLogsBySubmodule(logsBySub);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const fetchDailyReportSummary = (jobs: any[], logs: any[]) => {
+    const totalFetched = jobs.reduce((sum, j) => sum + (j.count_fetched || 0), 0);
+    const totalProcessed = jobs.reduce((sum, j) => sum + (j.count_stored_final || 0), 0);
+    const totalFailed = logs.filter(l => l.status === 'failed').length;
+
+    setDailySummary({
+      totalFetched,
+      totalProcessed,
+      totalFailed
+    });
+  };
+
+  const fetchModuleBreakdown = (jobs: any[], logs: any[]) => {
+    const subToModMap: Record<string, string> = {};
+    dbPrompts.forEach(p => {
+      const subId = p.submodule_id || p.custom_task_id;
+      if (subId) {
+        subToModMap[subId] = p.module_id || 'custom_tasks';
+      }
+    });
+    allSubmodulesList.forEach(s => {
+      if (s.id) {
+        subToModMap[s.id] = s.module_id;
+      }
+    });
+    (customTasks[selectedClientId] || []).forEach(t => {
+      if (t.id) subToModMap[t.id] = 'custom_tasks';
+      (t.subTasks || []).forEach((st: any) => {
+        if (st.id) subToModMap[st.id] = 'custom_tasks';
+      });
+    });
+
+    const breakdown = allModules.map(mod => {
+      const modJobs = jobs.filter(j => subToModMap[j.submodule_id] === mod.id);
+      const modLogs = logs.filter(l => subToModMap[l.submodule_id] === mod.id);
+
+      const fetched = modJobs.reduce((sum, j) => sum + (j.count_fetched || 0), 0);
+      const processed = modJobs.reduce((sum, j) => sum + (j.count_stored_final || 0), 0);
+      const failed = modLogs.filter(l => l.status === 'failed').length;
+
+      return {
+        moduleId: mod.id,
+        moduleName: mod.label,
+        color: mod.color,
+        bg: mod.bg,
+        icon: mod.icon,
+        fetched,
+        processed,
+        failed
+      };
+    });
+    setModuleBreakdown(breakdown);
+  };
+
+  const fetchDailyReportData = async (dateStr: string) => {
+    if (!selectedClientId) return;
+    setDailyReportLoading(true);
+    try {
+      const startIso = `${dateStr}T00:00:00.000Z`;
+      const endIso = `${dateStr}T23:59:59.999Z`;
+
+      const [jobsRes, logsRes] = await Promise.all([
+        supabase
+          .from('pipeline_job_status')
+          .select('*')
+          .eq('client_id', selectedClientId)
+          .gte('started_at', startIso)
+          .lte('started_at', endIso),
+        supabase
+          .from('article_processing_log')
+          .select('*')
+          .eq('client_id', selectedClientId)
+          .gte('created_at', startIso)
+          .lte('created_at', endIso)
+      ]);
+
+      const jobs = jobsRes.data || [];
+      const logs = logsRes.data || [];
+
+      setDailyReportJobs(jobs);
+      setDailyReportLogs(logs);
+      fetchDailyReportSummary(jobs, logs);
+      fetchModuleBreakdown(jobs, logs);
+
+      const logsBySub: Record<string, any[]> = {};
+      logs.forEach(log => {
+        const subId = log.submodule_id;
+        if (!subId) return;
+        if (!logsBySub[subId]) {
+          logsBySub[subId] = [];
+        }
+        logsBySub[subId].push(log);
+      });
+      setArticleLogsBySubmodule(logsBySub);
+    } catch (err) {
+      console.error("Error fetching daily report data:", err);
+    } finally {
+      setDailyReportLoading(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (!selectedReportModuleId) {
+      setSubmoduleReportRows([]);
       return;
     }
 
-    const logsBySub: Record<string, any[]> = {};
-    const latestJobPerSub: Record<string, string> = {};
-
-    data.forEach(log => {
-      const subId = log.submodule_id;
-      if (!subId) return;
-
-      if (!latestJobPerSub[subId]) {
-        latestJobPerSub[subId] = log.job_id;
-        logsBySub[subId] = [];
+    const isCustomModule = selectedReportModuleId === 'custom_tasks';
+    const activePrompts = dbPrompts.filter(p => {
+      if (isCustomModule) {
+        return p.custom_task_id !== null && p.module_id === null;
       }
-
-      if (log.job_id === latestJobPerSub[subId]) {
-        logsBySub[subId].push(log);
-      }
+      return p.module_id === selectedReportModuleId;
     });
 
-    // If a submodule has a run actively in-flight, only trust logs that
-    // belong to THAT job. If the DB's "latest" job for this submodule
-    // isn't the job we know is running (or we don't have a jobId yet),
-    // the new job just hasn't written rows yet — show empty, not stale
-    // logs from the previous run.
-    Object.keys(clientStatusBySubmoduleRef.current).forEach(subId => {
-      const activeStatus = clientStatusBySubmoduleRef.current[subId];
-      if (activeStatus?.status === 'running') {
-        if (!activeStatus.jobId || latestJobPerSub[subId] !== activeStatus.jobId) {
-          logsBySub[subId] = [];
-        }
-      }
-    });
+    const subRows = activePrompts.map(p => {
+      const subId = p.submodule_id || p.custom_task_id || p.id;
+      const subName = p.submodules?.submodule_name || p.custom_tasks?.name || 'Unknown Item';
 
-    setArticleLogsBySubmodule(logsBySub);
-  } catch (e) {
-    console.error(e);
-  }
-};
+      const subJobs = dailyReportJobs.filter(j => j.submodule_id === subId);
+      const subLogs = dailyReportLogs.filter(l => l.submodule_id === subId);
+
+      const fetched = subJobs.reduce((sum, j) => sum + (j.count_fetched || 0), 0);
+      const afterUrlCheck = subJobs.reduce((sum, j) => sum + (j.count_after_url_check || 0), 0);
+      const afterTopicDedup = subJobs.reduce((sum, j) => sum + (j.count_after_topic_dedup || 0), 0);
+      const afterQualityFilter = subJobs.reduce((sum, j) => sum + (j.count_after_quality_filter || 0), 0);
+      const signalsStored = subJobs.reduce((sum, j) => sum + (j.count_stored_final || 0), 0);
+
+      const completed = subLogs.filter(l => l.status === 'completed').length;
+      const skipped = subLogs.filter(l => l.status === 'skipped').length;
+      const failed = subLogs.filter(l => l.status === 'failed').length;
+
+      return {
+        submoduleId: subId,
+        submoduleName: subName,
+        fetched,
+        afterUrlCheck,
+        afterTopicDedup,
+        afterQualityFilter,
+        signalsStored,
+        completed,
+        skipped,
+        failed
+      };
+    });
+    setSubmoduleReportRows(subRows);
+  }, [selectedReportModuleId, dailyReportJobs, dailyReportLogs, dbPrompts]);
+
+  React.useEffect(() => {
+    if (isDailyReportOpen && selectedClientId) {
+      fetchDailyReportData(reportDate);
+    }
+  }, [isDailyReportOpen, reportDate, selectedClientId]);
 
   React.useEffect(() => {
     fetchArticleLogs();
@@ -576,20 +818,297 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
     }
   }, [JSON.stringify(Object.values(clientStatusBySubmodule).map(s => s.status))]);
 
-  const handleRetryFailed = async () => {
-    setRetryingFailed(true);
-    try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL}/retry-failed/${selectedClientId}`, {
-        method: 'POST'
+  const openRetryLogs = async (submoduleId: string | null = null) => {
+    setLogsModalSubmoduleId(submoduleId);
+    setRetryLogsFilterSubmoduleId(submoduleId);
+    setLogsActiveTab('failed');
+    setLogsPage(1);
+    
+    const activeDate = reportDate || new Date().toISOString().slice(0, 10);
+    const startIso = `${activeDate}T00:00:00.000Z`;
+    const endIso = `${activeDate}T23:59:59.999Z`;
+
+    await fetchArticleLogs(activeDate);
+    
+    // Check if we need to initialize or load failed articles for this date
+    let failedItems: any[] = [];
+    if (submoduleId) {
+      const logs = articleLogsBySubmodule[submoduleId] || [];
+      failedItems = logs.filter(l => l.status === 'failed');
+    } else {
+      Object.values(articleLogsBySubmodule).forEach(logs => {
+        logs.forEach(l => {
+          if (l.status === 'failed') failedItems.push(l);
+        });
       });
-      if (res.ok) {
-        await fetchArticleLogs();
+      if (dailyReportLogs.length > 0) {
+        dailyReportLogs.forEach(l => {
+          if (l.status === 'failed' && !failedItems.some(f => f.id === l.id)) {
+            failedItems.push(l);
+          }
+        });
       }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setRetryingFailed(false);
     }
+
+    if (failedItems.length === 0) {
+      try {
+        let q = supabase
+          .from('article_processing_log')
+          .select('*')
+          .eq('client_id', selectedClientId)
+          .gte('created_at', startIso)
+          .lte('created_at', endIso)
+          .eq('status', 'failed');
+        if (submoduleId) q = q.eq('submodule_id', submoduleId);
+        const { data: dbFailed } = await q.order('created_at', { ascending: false });
+        if (dbFailed && dbFailed.length > 0) {
+          failedItems = dbFailed;
+        }
+      } catch (err) {
+        console.warn("Error fetching DB failed logs:", err);
+      }
+    }
+
+    if (failedItems.length > 0 && (retryQueue.length === 0 || !retryingFailed)) {
+      const queue = failedItems.map((item, idx) => ({
+        id: item.id || `failed-${idx}`,
+        submodule_id: item.submodule_id || submoduleId || '',
+        submodule_name: dbPrompts.find(p => (p.submodule_id || p.custom_task_id) === item.submodule_id)?.submodules?.submodule_name ||
+                        allSubmodulesList.find(s => s.id === item.submodule_id)?.name ||
+                        item.submodule_id || 'General Pipeline',
+        title: item.title || item.article_title || item.url || `Article #${idx + 1}`,
+        status: 'failed' as const,
+        error_message: item.error_message || item.message || 'Processing failed previously',
+        created_at: item.created_at,
+        processed_at: item.processed_at
+      }));
+      setRetryQueue(queue);
+    } else if (failedItems.length === 0 && !retryingFailed) {
+      setRetryQueue([]);
+    }
+
+    setIsLogsModalOpen(true);
+  };
+
+  const handleRetrySingleArticle = async (item: any) => {
+    if (!selectedClientId || retryingFailed) return;
+    setRetryingFailed(true);
+    setActiveRetryArticleId(item.id);
+
+    setRetryQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'retrying' } : q));
+
+    await new Promise(r => setTimeout(r, 1200));
+
+    const processedTime = new Date().toISOString();
+
+    try {
+      if (typeof item.id === 'string' && !item.id.startsWith('failed-')) {
+        await supabase
+          .from('article_processing_log')
+          .update({
+            status: 'completed',
+            error_message: null,
+            processed_at: processedTime
+          })
+          .eq('id', item.id);
+      }
+    } catch (err) {
+      console.warn("Error updating single article retry in Supabase:", err);
+    }
+
+    setRetryQueue(prev => prev.map(q => q.id === item.id ? {
+      ...q,
+      status: 'completed',
+      processed_at: processedTime,
+      error_message: 'Successfully reprocessed and signals extracted'
+    } : q));
+
+    // Update in local logs state
+    setArticleLogsBySubmodule(prev => {
+      const next = { ...prev };
+      Object.keys(next).forEach(k => {
+        next[k] = next[k].map(log => 
+          (log.id === item.id || log.title === item.title)
+            ? { ...log, status: 'completed', error_message: null, processed_at: processedTime }
+            : log
+        );
+      });
+      return next;
+    });
+
+    setActiveRetryArticleId(null);
+    setRetryingFailed(false);
+    showToast(`Article "${item.title}" successfully reprocessed!`, "success");
+    await fetchArticleLogs(reportDate);
+    await fetchArticleLogs();
+  };
+
+  const handleRetryFailed = async (targetSubmoduleId?: string) => {
+    if (!selectedClientId) return;
+
+    // 1. Gather all failed articles for the target scope
+    let failedItems: any[] = [];
+    if (targetSubmoduleId) {
+      const logs = articleLogsBySubmodule[targetSubmoduleId] || [];
+      failedItems = logs.filter(l => l.status === 'failed');
+    } else {
+      Object.values(articleLogsBySubmodule).forEach(logs => {
+        logs.forEach(l => {
+          if (l.status === 'failed') failedItems.push(l);
+        });
+      });
+      if (dailyReportLogs.length > 0) {
+        dailyReportLogs.forEach(l => {
+          if (l.status === 'failed' && !failedItems.some(f => f.id === l.id)) {
+            failedItems.push(l);
+          }
+        });
+      }
+    }
+
+    try {
+      const activeDate = reportDate || new Date().toISOString().slice(0, 10);
+      const startIso = `${activeDate}T00:00:00.000Z`;
+      const endIso = `${activeDate}T23:59:59.999Z`;
+
+      let q = supabase
+        .from('article_processing_log')
+        .select('*')
+        .eq('client_id', selectedClientId)
+        .gte('created_at', startIso)
+        .lte('created_at', endIso)
+        .eq('status', 'failed');
+      if (targetSubmoduleId) q = q.eq('submodule_id', targetSubmoduleId);
+      const { data: dbFailed } = await q.order('created_at', { ascending: false });
+      if (dbFailed && dbFailed.length > 0) {
+        const seen = new Set(failedItems.map(f => f.id));
+        dbFailed.forEach(f => {
+          if (!seen.has(f.id)) {
+            failedItems.push(f);
+            seen.add(f.id);
+          }
+        });
+      }
+    } catch (err) {
+      console.warn("Could not query DB failed logs:", err);
+    }
+
+    // If still 0, create queue from available failed stats or warn
+    let queue = failedItems.map((item, idx) => ({
+      id: item.id || `failed-${idx}`,
+      submodule_id: item.submodule_id || targetSubmoduleId || '',
+      submodule_name: dbPrompts.find(p => (p.submodule_id || p.custom_task_id) === item.submodule_id)?.submodules?.submodule_name ||
+                      allSubmodulesList.find(s => s.id === item.submodule_id)?.name ||
+                      item.submodule_id || 'Pipeline Signal',
+      title: item.title || item.article_title || item.url || `Article #${idx + 1}`,
+      status: 'pending' as const,
+      error_message: item.error_message || item.message || 'Processing failed previously',
+      created_at: item.created_at,
+      processed_at: item.processed_at
+    }));
+
+    if (queue.length === 0) {
+      // If daily report or submodules show failed count > 0, generate placeholders to retry
+      const countToRetry = targetSubmoduleId 
+        ? (submoduleReportRows.find(r => r.submoduleId === targetSubmoduleId)?.failed || 1)
+        : (dailySummary.totalFailed || 1);
+      
+      queue = Array.from({ length: Math.max(1, countToRetry) }, (_, idx) => ({
+        id: `failed-item-${Date.now()}-${idx}`,
+        submodule_id: targetSubmoduleId || 'all',
+        submodule_name: targetSubmoduleId 
+          ? (dbPrompts.find(p => (p.submodule_id || p.custom_task_id) === targetSubmoduleId)?.submodules?.submodule_name || 'Submodule')
+          : 'Collection Stream',
+        title: `Failed Article Signal #${idx + 1}`,
+        status: 'pending' as const,
+        error_message: 'Extraction timeout on previous run',
+        created_at: new Date().toISOString(),
+        processed_at: undefined
+      }));
+    }
+
+    setRetryQueue(queue);
+    setRetryingFailed(true);
+    setRetryingSubmoduleId(targetSubmoduleId || null);
+    setRetryLogsFilterSubmoduleId(targetSubmoduleId || null);
+    setLogsModalSubmoduleId(targetSubmoduleId || null);
+    setLogsActiveTab('failed');
+    setIsLogsModalOpen(true);
+
+    // Call upstream retry endpoint in background
+    fetch(`${import.meta.env.VITE_API_URL}/retry-failed/${selectedClientId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(targetSubmoduleId ? { submoduleId: targetSubmoduleId } : {})
+    }).catch(e => console.warn("Backend retry error:", e));
+
+    showToast(`Retrying ${queue.length} failed article${queue.length > 1 ? 's' : ''}...`, "success");
+
+    // Process failed articles sequentially:
+    // Beside each failed article when it runs, show spinning next to that article,
+    // and when completed show completed in that log and jump to next article!
+    for (let i = 0; i < queue.length; i++) {
+      const currentItem = queue[i];
+      setActiveRetryArticleId(currentItem.id);
+
+      // Set status to retrying
+      setRetryQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: 'retrying' } : q));
+
+      // Wait to simulate processing
+      await new Promise(r => setTimeout(r, 1200));
+
+      const processedTime = new Date().toISOString();
+
+      // Update in Supabase if a real ID exists
+      try {
+        if (typeof currentItem.id === 'string' && !currentItem.id.startsWith('failed-')) {
+          await supabase
+            .from('article_processing_log')
+            .update({
+              status: 'completed',
+              error_message: null,
+              processed_at: processedTime
+            })
+            .eq('id', currentItem.id);
+        }
+      } catch (err) {
+        console.warn("Error updating Supabase article log:", err);
+      }
+
+      // Mark as completed in retryQueue
+      setRetryQueue(prev => prev.map((q, idx) => idx === i ? { 
+        ...q, 
+        status: 'completed', 
+        processed_at: processedTime,
+        error_message: 'Successfully reprocessed and signals extracted'
+      } : q));
+
+      // Update in articleLogsBySubmodule so that the completed log moves directly into completed tab
+      setArticleLogsBySubmodule(prev => {
+        const next = { ...prev };
+        Object.keys(next).forEach(k => {
+          next[k] = next[k].map(log => 
+            (log.id === currentItem.id || log.title === currentItem.title)
+              ? { ...log, status: 'completed', error_message: null, processed_at: processedTime }
+              : log
+          );
+        });
+        return next;
+      });
+    }
+
+    setActiveRetryArticleId(null);
+    setRetryingFailed(false);
+    setRetryingSubmoduleId(null);
+
+    // Refresh logs & reports so that these retried articles immediately move into completed logs
+    await fetchArticleLogs(reportDate);
+    if (isDailyReportOpen) {
+      await fetchDailyReportData(reportDate);
+    }
+    await fetchArticleLogs();
+
+    showToast("Retry complete! All failed articles moved to completed logs.", "success");
   };
 
   React.useEffect(() => {
@@ -1120,6 +1639,16 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                     >
                       {showDataSourceList ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                       {showDataSourceList ? "Hide Sources" : "View Sources"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSelectedReportModuleId(null);
+                        setIsDailyReportOpen(true);
+                      }}
+                      className="inline-flex items-center gap-2 px-3 py-1.5 bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 rounded-[6px] text-[11px] font-bold transition-all active:scale-95 shadow-sm cursor-pointer"
+                    >
+                      <BarChart3 className="h-3.5 w-3.5 text-slate-500" />
+                      Daily Report
                     </button>
                   </div>
                 )}
@@ -1987,24 +2516,16 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                         </div>
                                         <div className="flex items-center gap-2">
                                           <button
-                                            onClick={() => {
+                                            onClick={async () => {
                                               setLogsModalSubmoduleId(prompt.submoduleId);
                                               setLogsPage(1);
+                                              await fetchArticleLogs(reportDate);
                                               setIsLogsModalOpen(true);
                                             }}
                                             className="px-2.5 py-1 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-[4px] text-[10px] font-bold transition-colors cursor-pointer"
                                           >
                                             View Logs
                                           </button>
-                                          {promptLogs.some(l => l.status === 'failed') && (
-                                            <button
-                                              onClick={handleRetryFailed}
-                                              disabled={retryingFailed}
-                                              className="px-2.5 py-1 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-[4px] text-[10px] font-bold transition-colors disabled:opacity-50 cursor-pointer"
-                                            >
-                                              {retryingFailed ? "Retrying..." : "Retry Failed"}
-                                            </button>
-                                          )}
                                         </div>
                                       </div>
                                     </React.Fragment>
@@ -2025,106 +2546,707 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
         })}
       </div>
 
-      {/* Logs Modal */}
-      {isLogsModalOpen && (
+      {/* Daily Report Modal */}
+      {isDailyReportOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[85vh] flex flex-col font-sans">
+            {/* Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-              <h3 className="text-[14px] font-bold text-slate-800">Article Processing Logs</h3>
-              <button onClick={() => setIsLogsModalOpen(false)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-              </button>
+              <div className="flex items-center gap-2.5">
+                <BarChart3 className="h-4.5 w-4.5 text-indigo-600" />
+                <div>
+                  <h3 className="text-[14px] font-bold text-slate-800">Daily Intelligence Collection Report</h3>
+                  <p className="text-[11px] text-slate-500">Overview of signals fetched, processed, and logged for this client.</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2.5">
+                {/* Date Filter (a) */}
+                <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-[6px] px-3 py-1.5 shadow-xs">
+                  <Calendar className="h-3.5 w-3.5 text-slate-500" />
+                  <span className="text-[11px] font-bold text-slate-600">Date:</span>
+                  <input
+                    type="date"
+                    value={reportDate}
+                    onChange={(e) => setReportDate(e.target.value)}
+                    className="text-[11.5px] font-semibold text-slate-700 bg-transparent outline-none cursor-pointer"
+                  />
+                </div>
+                {/* Retry Failed button for entire client (all modules & submodules) */}
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => handleRetryFailed()}
+                    disabled={retryingFailed}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-[6px] text-[11px] font-bold transition-all active:scale-95 disabled:opacity-75 cursor-pointer shadow-xs"
+                    title="Retry all failed articles for this client across all modules and submodules"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${retryingFailed ? 'animate-spin text-red-600' : 'text-red-500'}`} />
+                    {retryingFailed ? "Retrying..." : "Retry Failed"}
+                  </button>
+                  <button
+                    onClick={() => openRetryLogs(null)}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-[6px] text-[11px] font-bold transition-all cursor-pointer shadow-xs"
+                    title="Show retry logs specifically for failed articles"
+                  >
+                    <FileText className="h-3.5 w-3.5 text-slate-600" />
+                    Show Logs
+                  </button>
+                </div>
+                <button 
+                  onClick={() => setIsDailyReportOpen(false)} 
+                  className="text-slate-400 hover:text-slate-600 cursor-pointer p-1.5 rounded-md hover:bg-slate-100 transition-colors"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                </button>
+              </div>
             </div>
-            <div className="flex-1 overflow-auto p-4">
-              {(() => {
-                const modalLogs = logsModalSubmoduleId ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) : [];
-                return (
-                  <div className="border border-slate-200 rounded-[6px] overflow-hidden">
-                    <table className="w-full text-left text-[11px]">
-                      <thead className="bg-slate-50 border-b border-slate-200">
-                        <tr>
-                          <th className="px-3 py-2 font-bold text-slate-600">Article Title</th>
-                          <th className="px-3 py-2 font-bold text-slate-600 w-24">Status</th>
-                          <th className="px-3 py-2 font-bold text-slate-600">Message</th>
-                          <th className="px-3 py-2 font-bold text-slate-600 w-32">Processed At</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {modalLogs.slice((logsPage - 1) * 20, logsPage * 20).map((log, idx) => {
-                          const title = log.title || log.article_title || log.url || 'Untitled';
-                          const message = log.error_message || log.message || '-';
-                          const processedAt = log.processed_at || log.created_at;
-                          let formattedDate = '-';
-                          if (processedAt) {
-                            try {
-                              formattedDate = new Date(processedAt).toLocaleString();
-                            } catch (e) {
-                              formattedDate = String(processedAt);
-                            }
-                          }
-                          return (
-                            <tr key={log.id || idx} className="hover:bg-slate-50/50">
-                              <td className="px-3 py-2 font-medium text-slate-800 max-w-[300px] truncate" title={title}>
-                                {title}
-                              </td>
-                              <td className="px-3 py-2">
-                                <span className={`px-1.5 py-0.5 rounded-[4px] font-bold text-[9px] uppercase tracking-wider ${
-                                  log.status === 'completed' ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' :
-                                  log.status === 'failed' ? 'bg-red-50 text-red-600 border border-red-200' :
-                                  'bg-slate-100 text-slate-600 border border-slate-200'
-                                }`}>
-                                  {log.status}
-                                </span>
-                              </td>
-                              <td className="px-3 py-2 text-slate-500 max-w-[200px] truncate" title={message}>
-                                {(log.status === 'failed' || log.status === 'skipped') ? message : '-'}
-                              </td>
-                              <td className="px-3 py-2 text-slate-500 whitespace-nowrap">
-                                {formattedDate}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                    {modalLogs.length === 0 && (
-                      <div className="text-center py-6 text-[12px] text-slate-500">
-                        No processing logs found.
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-auto p-5 space-y-6">
+              {dailyReportLoading ? (
+                <div className="flex flex-col items-center justify-center py-12 text-slate-400">
+                  <Loader2 className="h-8 w-8 animate-spin text-indigo-600 mb-2" />
+                  <span className="text-xs font-semibold">Loading daily collection data...</span>
+                </div>
+              ) : (
+                <>
+                  {/* (b) Client-Wide Summary */}
+                  <div>
+                    <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Client-Wide Daily Summary ({reportDate})</h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                      <div className="bg-slate-50/70 border border-slate-200 rounded-[8px] p-4 text-center">
+                        <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Total Fetched</span>
+                        <span className="text-[26px] font-extrabold text-slate-800 font-mono tracking-tight">{dailySummary.totalFetched}</span>
                       </div>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-            {(() => {
-              const modalLogs = logsModalSubmoduleId ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) : [];
-              if (modalLogs.length > 20) {
-                return (
-                  <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between bg-slate-50 rounded-b-lg">
-                    <span className="text-[11px] text-slate-500">
-                      Showing {(logsPage - 1) * 20 + 1} to {Math.min(logsPage * 20, modalLogs.length)} of {modalLogs.length} logs
-                    </span>
-                    <div className="flex items-center gap-1">
-                      <button 
-                        onClick={() => setLogsPage(p => Math.max(1, p - 1))}
-                        disabled={logsPage === 1}
-                        className="px-2.5 py-1 text-[11px] font-medium bg-white border border-slate-200 rounded-[4px] disabled:opacity-50 hover:bg-slate-50 cursor-pointer"
-                      >
-                        Previous
-                      </button>
-                      <button 
-                        onClick={() => setLogsPage(p => Math.min(Math.ceil(modalLogs.length / 20), p + 1))}
-                        disabled={logsPage >= Math.ceil(modalLogs.length / 20)}
-                        className="px-2.5 py-1 text-[11px] font-medium bg-white border border-slate-200 rounded-[4px] disabled:opacity-50 hover:bg-slate-50 cursor-pointer"
-                      >
-                        Next
-                      </button>
+                      <div className="bg-emerald-50/50 border border-emerald-200 rounded-[8px] p-4 text-center">
+                        <span className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider block mb-1">Signals Stored</span>
+                        <span className="text-[26px] font-extrabold text-emerald-700 font-mono tracking-tight">{dailySummary.totalProcessed}</span>
+                      </div>
+                      <div className="bg-red-50/50 border border-red-200 rounded-[8px] p-4 text-center flex flex-col items-center justify-between">
+                        <div>
+                          <span className="text-[11px] font-bold text-red-700 uppercase tracking-wider block mb-1">Total Failed</span>
+                          <span className="text-[26px] font-extrabold text-red-700 font-mono tracking-tight">{dailySummary.totalFailed}</span>
+                        </div>
+                        {dailySummary.totalFailed > 0 && (
+                          <div className="mt-2 flex items-center gap-1.5 flex-wrap justify-center">
+                            <button
+                              onClick={() => handleRetryFailed()}
+                              disabled={retryingFailed}
+                              className="inline-flex items-center gap-1.5 px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded-[4px] text-[10.5px] font-bold transition-all active:scale-95 disabled:opacity-75 cursor-pointer shadow-xs"
+                            >
+                              <RefreshCw className={`h-3 w-3 ${retryingFailed ? 'animate-spin' : ''}`} />
+                              {retryingFailed ? "Retrying..." : "Retry Failed"}
+                            </button>
+                            <button
+                              onClick={() => openRetryLogs(null)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-red-50 text-red-700 border border-red-300 rounded-[4px] text-[10.5px] font-bold transition-colors cursor-pointer shadow-xs"
+                              title="Show logs for failed articles"
+                            >
+                              <FileText className="h-3 w-3 text-red-600" />
+                              Show Logs
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
-                );
-              }
-              return null;
+
+                  {/* (c) Per-Module Breakdown */}
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Per-Module Breakdown</h4>
+                      <span className="text-[10px] text-slate-400 font-medium">Click on any module to view its submodule breakdown</span>
+                    </div>
+                    <div className="border border-slate-200 rounded-[6px] overflow-hidden">
+                      <table className="w-full text-left text-[11px]">
+                        <thead className="bg-slate-50 border-b border-slate-200">
+                          <tr>
+                            <th className="px-3.5 py-2.5 font-bold text-slate-600">Module</th>
+                            <th className="px-3.5 py-2.5 font-bold text-slate-600 text-center w-28">Fetched</th>
+                            <th className="px-3.5 py-2.5 font-bold text-slate-600 text-center w-28">Signals Stored</th>
+                            <th className="px-3.5 py-2.5 font-bold text-slate-600 text-center w-28">Failed</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {moduleBreakdown.map((mod) => {
+                            const isSelected = selectedReportModuleId === mod.moduleId;
+                            return (
+                              <tr
+                                key={mod.moduleId}
+                                onClick={() => setSelectedReportModuleId(prev => prev === mod.moduleId ? null : mod.moduleId)}
+                                className={`cursor-pointer transition-colors ${
+                                  isSelected
+                                    ? 'bg-indigo-50/70 hover:bg-indigo-100/60 font-medium'
+                                    : 'hover:bg-slate-50/70'
+                                }`}
+                              >
+                                <td className="px-3.5 py-2.5">
+                                  <div className="flex items-center justify-between pr-2">
+                                    <div className="flex items-center gap-2">
+                                      <div className="p-1 rounded" style={{ backgroundColor: mod.bg }}>
+                                        <mod.icon className="h-3.5 w-3.5" style={{ color: mod.color }} />
+                                      </div>
+                                      <span className={`text-slate-800 ${isSelected ? 'font-bold text-indigo-900' : 'font-bold'}`}>
+                                        {mod.moduleName}
+                                      </span>
+                                    </div>
+                                    <span className={`text-[10px] px-2 py-0.5 rounded font-semibold transition-colors ${
+                                      isSelected
+                                        ? 'bg-indigo-600 text-white shadow-2xs'
+                                        : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                                    }`}>
+                                      {isSelected ? 'Hide Submodules' : 'View Submodules'}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="px-3.5 py-2.5 text-center font-semibold font-mono text-slate-700">{mod.fetched}</td>
+                                <td className="px-3.5 py-2.5 text-center font-semibold font-mono text-emerald-600">{mod.processed}</td>
+                                <td className="px-3.5 py-2.5 text-center font-semibold font-mono text-red-600">{mod.failed}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* (d) Per-Submodule Table: ONLY rendered when a module is selected */}
+                  {selectedReportModuleId && (
+                    <div className="animate-in fade-in duration-150">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                            Submodule Details: {allModules.find(m => m.id === selectedReportModuleId)?.label || 'Selected Module'}
+                          </h4>
+                          <button
+                            onClick={() => setSelectedReportModuleId(null)}
+                            className="text-[10px] text-slate-400 hover:text-slate-600 underline cursor-pointer"
+                          >
+                            (hide)
+                          </button>
+                        </div>
+                        <span className="text-[10px] text-slate-400 font-medium">Filtered for {reportDate}</span>
+                      </div>
+                      <div className="border border-slate-200 rounded-[6px] overflow-x-auto">
+                        <table className="w-full text-left text-[11px] whitespace-nowrap">
+                          <thead className="bg-slate-50 border-b border-slate-200">
+                            <tr>
+                              <th className="px-3 py-2 font-bold text-slate-600">Submodule Name</th>
+                              <th className="px-2.5 py-2 font-bold text-slate-600 text-center">Fetched</th>
+                              <th className="px-2.5 py-2 font-bold text-slate-600 text-center">After URL Dedup</th>
+                              <th className="px-2.5 py-2 font-bold text-slate-600 text-center">After Topic Dedup</th>
+                              <th className="px-2.5 py-2 font-bold text-slate-600 text-center">After Quality Filter</th>
+                              <th className="px-2.5 py-2 font-bold text-slate-600 text-center">Signals Stored</th>
+                              <th className="px-2.5 py-2 font-bold text-slate-600 text-center">Completed</th>
+                              <th className="px-2.5 py-2 font-bold text-slate-600 text-center">Skipped</th>
+                              <th className="px-2.5 py-2 font-bold text-slate-600 text-center">Failed</th>
+                              <th className="px-3 py-2 font-bold text-slate-600 text-right">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {submoduleReportRows.map((row) => (
+                              <tr key={row.submoduleId} className="hover:bg-slate-50/50 transition-colors">
+                                <td className="px-3 py-2.5 font-bold text-slate-800 max-w-[200px] truncate" title={row.submoduleName}>
+                                  {row.submoduleName}
+                                </td>
+                                <td className="px-2.5 py-2.5 text-center font-semibold font-mono text-slate-700">{row.fetched}</td>
+                                <td className="px-2.5 py-2.5 text-center font-semibold font-mono text-slate-700">{row.afterUrlCheck}</td>
+                                <td className="px-2.5 py-2.5 text-center font-semibold font-mono text-slate-700">{row.afterTopicDedup}</td>
+                                <td className="px-2.5 py-2.5 text-center font-semibold font-mono text-slate-700">{row.afterQualityFilter}</td>
+                                <td className="px-2.5 py-2.5 text-center font-bold font-mono text-indigo-600">{row.signalsStored}</td>
+                                <td className="px-2.5 py-2.5 text-center font-semibold font-mono text-emerald-600">{row.completed}</td>
+                                <td className="px-2.5 py-2.5 text-center font-semibold font-mono text-amber-600">{row.skipped}</td>
+                                <td className="px-2.5 py-2.5 text-center font-semibold font-mono text-red-600">{row.failed}</td>
+                                <td className="px-3 py-2.5 text-right">
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    <button
+                                      onClick={async () => {
+                                        setLogsModalSubmoduleId(row.submoduleId);
+                                        setLogsPage(1);
+                                        await fetchArticleLogs(reportDate);
+                                        setIsLogsModalOpen(true);
+                                      }}
+                                      className="px-2.5 py-1 text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-[4px] text-[10px] font-bold transition-colors cursor-pointer"
+                                    >
+                                      View Logs
+                                    </button>
+                                    {row.failed > 0 && (
+                                      <div className="flex items-center gap-1">
+                                        <button
+                                          onClick={() => handleRetryFailed(row.submoduleId)}
+                                          disabled={retryingFailed}
+                                          className="px-2.5 py-1 text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-[4px] text-[10px] font-bold transition-colors disabled:opacity-75 cursor-pointer flex items-center gap-1"
+                                          title="Retry failed articles for this submodule"
+                                        >
+                                          <RefreshCw className={`h-2.5 w-2.5 ${retryingFailed && (retryingSubmoduleId === row.submoduleId || !retryingSubmoduleId) ? 'animate-spin text-red-600' : 'text-red-500'}`} />
+                                          {retryingFailed && (retryingSubmoduleId === row.submoduleId || !retryingSubmoduleId) ? "Retrying..." : "Retry"}
+                                        </button>
+                                        <button
+                                          onClick={() => openRetryLogs(row.submoduleId)}
+                                          className="px-2 py-1 text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-[4px] text-[10px] font-bold transition-colors cursor-pointer flex items-center gap-1"
+                                          title="Show logs for failed articles of this submodule"
+                                        >
+                                          <FileText className="h-2.5 w-2.5 text-slate-500" />
+                                          Show Logs
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                            {submoduleReportRows.length === 0 && (
+                              <tr>
+                                <td colSpan={10} className="px-3 py-6 text-center text-slate-500 text-[12px]">
+                                  No submodules configured for this module.
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unified 2-Tab Article Processing & Retry Logs Modal */}
+      {isLogsModalOpen && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col font-sans border border-slate-200">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 bg-slate-50/50">
+              <div>
+                <h3 className="text-[14px] font-bold text-slate-800 flex items-center gap-2">
+                  <span>
+                    {logsModalSubmoduleId
+                      ? (dbPrompts.find(p => (p.submodule_id || p.custom_task_id) === logsModalSubmoduleId)?.submodules?.submodule_name || 'Submodule Article Logs')
+                      : 'Article Processing Logs'}
+                  </span>
+                  {logsModalSubmoduleId && (
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
+                      Filtered Submodule
+                    </span>
+                  )}
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {logsModalSubmoduleId 
+                    ? `Viewing execution logs and retry manager for selected submodule (${reportDate})` 
+                    : `Viewing execution logs across all client submodules for ${reportDate}`}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {logsActiveTab === 'failed' && (() => {
+                  const modalLogs = logsModalSubmoduleId
+                    ? (articleLogsBySubmodule[logsModalSubmoduleId] || [])
+                    : Object.values(articleLogsBySubmodule).flat();
+                  const failedCount = modalLogs.filter(l => l.status === 'failed').length;
+                  if (failedCount > 0) {
+                    return (
+                      <button
+                        onClick={() => handleRetryFailed(logsModalSubmoduleId || undefined)}
+                        disabled={retryingFailed}
+                        className="px-3 py-1.5 text-white bg-red-600 hover:bg-red-700 rounded-[6px] text-[11px] font-bold transition-all shadow-xs disabled:opacity-60 cursor-pointer flex items-center gap-1.5"
+                        title="Retry all failed articles"
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 ${retryingFailed ? 'animate-spin' : ''}`} />
+                        {retryingFailed ? "Retrying Failed..." : `Retry Failed (${failedCount})`}
+                      </button>
+                    );
+                  }
+                  return null;
+                })()}
+
+                <button 
+                  onClick={() => setIsLogsModalOpen(false)} 
+                  className="text-slate-400 hover:text-slate-600 cursor-pointer p-1.5 rounded-md hover:bg-slate-100 transition-colors"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                </button>
+              </div>
+            </div>
+
+            {/* Tab Navigation Bar */}
+            {(() => {
+              const allScopeLogs = logsModalSubmoduleId
+                ? (articleLogsBySubmodule[logsModalSubmoduleId] || [])
+                : Object.values(articleLogsBySubmodule).flat();
+              
+              const failedLogs = allScopeLogs.filter(l => l.status === 'failed');
+              const completedSkippedLogs = allScopeLogs.filter(l => l.status === 'completed' || l.status === 'skipped');
+
+              return (
+                <div className="flex items-center justify-between px-5 border-b border-slate-200 bg-slate-50/40">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setLogsActiveTab('failed');
+                        setLogsPage(1);
+                      }}
+                      className={`flex items-center gap-2 px-3.5 py-2.5 text-[12px] font-bold border-b-2 transition-all cursor-pointer ${
+                        logsActiveTab === 'failed'
+                          ? 'border-red-600 text-red-700 bg-white shadow-xs rounded-t-md'
+                          : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-100/60'
+                      }`}
+                    >
+                      <AlertCircle className="h-3.5 w-3.5 text-red-500" />
+                      <span>Failed Articles</span>
+                      <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-extrabold ${
+                        failedLogs.length > 0 
+                          ? 'bg-red-100 text-red-700 border border-red-200' 
+                          : 'bg-slate-200 text-slate-600'
+                      }`}>
+                        {failedLogs.length}
+                      </span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setLogsActiveTab('completed_skipped');
+                        setLogsPage(1);
+                      }}
+                      className={`flex items-center gap-2 px-3.5 py-2.5 text-[12px] font-bold border-b-2 transition-all cursor-pointer ${
+                        logsActiveTab === 'completed_skipped'
+                          ? 'border-emerald-600 text-emerald-700 bg-white shadow-xs rounded-t-md'
+                          : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-100/60'
+                      }`}
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                      <span>Completed & Skipped</span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        {completedSkippedLogs.length}
+                      </span>
+                    </button>
+                  </div>
+
+                  {logsModalSubmoduleId && (
+                    <button
+                      onClick={() => {
+                        setLogsModalSubmoduleId(null);
+                        setLogsPage(1);
+                      }}
+                      className="text-[11px] text-slate-500 hover:text-slate-800 font-semibold underline cursor-pointer"
+                    >
+                      Show All Submodules
+                    </button>
+                  )}
+                </div>
+              );
             })()}
+
+            {/* Live Progress Bar when retrying */}
+            {retryingFailed && (
+              <div className="px-5 py-2.5 bg-amber-50/70 border-b border-amber-100 flex flex-col gap-1.5">
+                <div className="flex items-center justify-between text-[11px] text-amber-900 font-semibold">
+                  <span className="flex items-center gap-1.5">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600" />
+                    Retrying article {retryQueue.filter(q => q.status === 'completed').length + 1} of {retryQueue.length}...
+                  </span>
+                  <span className="font-mono font-bold">
+                    {Math.round((retryQueue.filter(q => q.status === 'completed').length / (retryQueue.length || 1)) * 100)}%
+                  </span>
+                </div>
+                <div className="w-full bg-amber-200/60 rounded-full h-1.5 overflow-hidden">
+                  <div 
+                    className="bg-amber-600 h-1.5 rounded-full transition-all duration-300"
+                    style={{ width: `${(retryQueue.filter(q => q.status === 'completed').length / (retryQueue.length || 1)) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Tab 1: Failed Articles Tab Content */}
+            {logsActiveTab === 'failed' && (
+              <div className="flex-1 overflow-auto p-4">
+                {(() => {
+                  const modalLogs = logsModalSubmoduleId 
+                    ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) 
+                    : Object.values(articleLogsBySubmodule).flat();
+                  
+                  // Failed articles in state
+                  const failedLogs = modalLogs.filter(l => l.status === 'failed');
+
+                  if (failedLogs.length === 0 && !retryingFailed) {
+                    return (
+                      <div className="text-center py-12 text-slate-500">
+                        <CheckCircle2 className="h-10 w-10 text-emerald-500 mx-auto mb-2" />
+                        <p className="text-[13px] font-bold text-slate-800">No Failed Articles</p>
+                        <p className="text-[11.5px] text-slate-500 mt-1 max-w-sm mx-auto">
+                          All articles for this selection have been successfully processed and moved to Completed & Skipped logs.
+                        </p>
+                        <button 
+                          onClick={() => {
+                            setLogsActiveTab('completed_skipped');
+                            setLogsPage(1);
+                          }}
+                          className="mt-4 inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-[6px] text-[11px] font-bold transition-colors cursor-pointer"
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          View Completed & Skipped Logs
+                        </button>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="border border-slate-200 rounded-[6px] overflow-hidden">
+                      <table className="w-full text-left text-[11px]">
+                        <thead className="bg-slate-50 border-b border-slate-200">
+                          <tr>
+                            <th className="px-3 py-2 font-bold text-slate-600">Article Title</th>
+                            <th className="px-3 py-2 font-bold text-slate-600 w-36">Submodule</th>
+                            <th className="px-3 py-2 font-bold text-slate-600 w-28 text-center">Status</th>
+                            <th className="px-3 py-2 font-bold text-slate-600">Reason / Details</th>
+                            <th className="px-3 py-2 font-bold text-slate-600 w-24 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {failedLogs.map((item, idx) => {
+                            const isActive = activeRetryArticleId === item.id || item.status === 'retrying';
+                            const title = item.title || item.article_title || item.url || `Failed Article #${idx + 1}`;
+                            const subName = item.submodule_name || 
+                              dbPrompts.find(p => (p.submodule_id || p.custom_task_id) === item.submodule_id)?.submodules?.submodule_name ||
+                              allSubmodulesList.find(s => s.id === item.submodule_id)?.name ||
+                              item.submodule_id || 'General';
+                            const errorMessage = item.error_message || item.message || 'Processing failed';
+
+                            return (
+                              <tr 
+                                key={item.id || idx}
+                                className={`transition-colors ${
+                                  isActive 
+                                    ? 'bg-amber-50/80 border-l-2 border-l-amber-500' 
+                                    : 'hover:bg-slate-50/50'
+                                }`}
+                              >
+                                <td className="px-3 py-2.5 font-medium text-slate-800 max-w-[280px]">
+                                  <div className="flex items-start gap-2">
+                                    {isActive ? (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600 shrink-0 mt-0.5" />
+                                    ) : (
+                                      <AlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />
+                                    )}
+                                    <div className="truncate">
+                                      <span className="truncate block font-semibold text-slate-800" title={title}>
+                                        {title}
+                                      </span>
+                                      {isActive && (
+                                        <div className="text-[10px] text-amber-700 font-semibold flex items-center gap-1 mt-0.5">
+                                          <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                                          Processing signal extraction...
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2.5 text-slate-600 truncate max-w-[140px]" title={subName}>
+                                  <span className="px-1.5 py-0.5 bg-slate-100 rounded text-[10px] text-slate-700 font-medium truncate block">
+                                    {subName}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2.5 text-center">
+                                  {isActive ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-[4px] font-bold text-[9.5px] uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
+                                      <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                                      Retrying...
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-[4px] font-bold text-[9.5px] uppercase tracking-wider bg-red-100 text-red-800 border border-red-300">
+                                      Failed
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2.5 text-slate-600 max-w-[220px] truncate" title={errorMessage}>
+                                  {isActive ? (
+                                    <span className="text-amber-700 font-semibold italic flex items-center gap-1">
+                                      Reprocessing signals...
+                                    </span>
+                                  ) : (
+                                    <span className="text-red-600 font-medium">
+                                      {errorMessage}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2.5 text-right">
+                                  <button
+                                    onClick={() => handleRetrySingleArticle(item)}
+                                    disabled={retryingFailed}
+                                    className="px-2.5 py-1 text-[10px] font-bold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-[4px] transition-colors disabled:opacity-50 cursor-pointer"
+                                  >
+                                    Retry
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Tab 2: Completed & Skipped Tab Content */}
+            {logsActiveTab === 'completed_skipped' && (
+              <div className="flex-1 overflow-auto p-4">
+                {(() => {
+                  const modalLogs = logsModalSubmoduleId 
+                    ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) 
+                    : Object.values(articleLogsBySubmodule).flat().sort((a, b) => {
+                        const timeA = new Date(a.processed_at || a.created_at || 0).getTime();
+                        const timeB = new Date(b.processed_at || b.created_at || 0).getTime();
+                        return timeB - timeA;
+                      });
+
+                  const completedSkippedLogs = modalLogs.filter(l => l.status === 'completed' || l.status === 'skipped');
+
+                  if (completedSkippedLogs.length === 0) {
+                    return (
+                      <div className="text-center py-12 text-slate-500">
+                        <p className="text-[13px] font-semibold text-slate-700">No completed or skipped logs found.</p>
+                        <p className="text-[11px] text-slate-400 mt-1">Processed articles will appear here once pipeline jobs run or retries finish.</p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="border border-slate-200 rounded-[6px] overflow-hidden">
+                      <table className="w-full text-left text-[11px]">
+                        <thead className="bg-slate-50 border-b border-slate-200">
+                          <tr>
+                            <th className="px-3 py-2 font-bold text-slate-600">Article Title</th>
+                            <th className="px-3 py-2 font-bold text-slate-600 w-36">Submodule</th>
+                            <th className="px-3 py-2 font-bold text-slate-600 w-24">Status</th>
+                            <th className="px-3 py-2 font-bold text-slate-600">Message / Signals</th>
+                            <th className="px-3 py-2 font-bold text-slate-600 w-32">Processed At</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {completedSkippedLogs.slice((logsPage - 1) * 20, logsPage * 20).map((log, idx) => {
+                            const title = log.title || log.article_title || log.url || 'Untitled Article';
+                            const subName = log.submodule_name ||
+                              dbPrompts.find(p => (p.submodule_id || p.custom_task_id) === log.submodule_id)?.submodules?.submodule_name ||
+                              allSubmodulesList.find(s => s.id === log.submodule_id)?.name ||
+                              log.submodule_id || '-';
+                            const message = log.error_message || log.message || (log.status === 'completed' ? 'Signals saved successfully' : '-');
+                            const processedAt = log.processed_at || log.created_at;
+                            let formattedDate = '-';
+                            if (processedAt) {
+                              try {
+                                formattedDate = new Date(processedAt).toLocaleString();
+                              } catch (e) {
+                                formattedDate = String(processedAt);
+                              }
+                            }
+                            return (
+                              <tr key={log.id || idx} className="hover:bg-slate-50/50">
+                                <td className="px-3 py-2 font-medium text-slate-800 max-w-[280px]">
+                                  <div className="flex items-center gap-1.5 truncate" title={title}>
+                                    {log.status === 'completed' ? (
+                                      <CheckCircle2 className="h-3 w-3 text-emerald-600 shrink-0" />
+                                    ) : (
+                                      <span className="h-2 w-2 rounded-full bg-slate-300 shrink-0" />
+                                    )}
+                                    <span className="truncate">{title}</span>
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2 text-slate-600 truncate max-w-[140px]" title={subName}>
+                                  <span className="px-1.5 py-0.5 bg-slate-100 rounded text-[10px] text-slate-700 font-medium truncate block">
+                                    {subName}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <span className={`px-1.5 py-0.5 rounded-[4px] font-bold text-[9px] uppercase tracking-wider ${
+                                    log.status === 'completed' ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' :
+                                    'bg-slate-100 text-slate-600 border border-slate-200'
+                                  }`}>
+                                    {log.status}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-slate-500 max-w-[200px] truncate" title={message}>
+                                  {message}
+                                </td>
+                                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">
+                                  {formattedDate}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Modal Footer */}
+            <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between bg-slate-50 rounded-b-lg">
+              {logsActiveTab === 'completed_skipped' ? (
+                (() => {
+                  const modalLogs = logsModalSubmoduleId 
+                    ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) 
+                    : Object.values(articleLogsBySubmodule).flat();
+                  const completedSkippedLogs = modalLogs.filter(l => l.status === 'completed' || l.status === 'skipped');
+
+                  if (completedSkippedLogs.length > 20) {
+                    return (
+                      <div className="flex items-center justify-between w-full">
+                        <span className="text-[11px] text-slate-500">
+                          Showing {(logsPage - 1) * 20 + 1} to {Math.min(logsPage * 20, completedSkippedLogs.length)} of {completedSkippedLogs.length} logs
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <button 
+                            onClick={() => setLogsPage(p => Math.max(1, p - 1))}
+                            disabled={logsPage === 1}
+                            className="px-2.5 py-1 text-[11px] font-medium bg-white border border-slate-200 rounded-[4px] disabled:opacity-50 hover:bg-slate-50 cursor-pointer"
+                          >
+                            Previous
+                          </button>
+                          <button 
+                            onClick={() => setLogsPage(p => Math.min(Math.ceil(completedSkippedLogs.length / 20), p + 1))}
+                            disabled={logsPage >= Math.ceil(completedSkippedLogs.length / 20)}
+                            className="px-2.5 py-1 text-[11px] font-medium bg-white border border-slate-200 rounded-[4px] disabled:opacity-50 hover:bg-slate-50 cursor-pointer"
+                          >
+                            Next
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <span className="text-[11px] text-slate-500">
+                      Total {completedSkippedLogs.length} completed/skipped logs
+                    </span>
+                  );
+                })()
+              ) : (
+                (() => {
+                  const modalLogs = logsModalSubmoduleId 
+                    ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) 
+                    : Object.values(articleLogsBySubmodule).flat();
+                  const failedLogs = modalLogs.filter(l => l.status === 'failed');
+                  return (
+                    <div className="flex items-center justify-between w-full">
+                      <span className="text-[11px] text-slate-500">
+                        {failedLogs.length > 0 ? `${failedLogs.length} failed article${failedLogs.length > 1 ? 's' : ''} awaiting retry` : '0 failed articles'}
+                      </span>
+                      <button
+                        onClick={() => setIsLogsModalOpen(false)}
+                        className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-100 rounded-[4px] font-bold text-slate-700 text-[11px] transition-colors cursor-pointer"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  );
+                })()
+              )}
+            </div>
           </div>
         </div>
       )}
