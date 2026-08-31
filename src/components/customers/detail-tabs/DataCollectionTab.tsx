@@ -19,7 +19,9 @@ import {
   EyeOff,
   Calendar,
   BarChart3,
-  AlertCircle
+  AlertCircle,
+  SkipForward,
+  MinusCircle
 } from "lucide-react";
 import { useIntelligenceModules } from "../../../data/intelligenceModules";
 import { COLLECTION_PROMPTS } from "../../../data/prompts";
@@ -70,6 +72,21 @@ const STAGE_LABELS: Record<string, string> = {
   'completed': 'Completed',
   'failed': 'Failed'
 };
+
+// Converts a YYYY-MM-DD date (treated as an IST calendar day) into the
+// correct UTC start/end timestamps for that day. Needed because schedules
+// run in IST but Supabase timestamps are UTC — a 2 AM IST job actually
+// happened at 6:30 PM UTC the day before.
+const getISTDayBoundsUTC = (dateStr: string) => {
+  const startIso = new Date(`${dateStr}T00:00:00.000+05:30`).toISOString();
+  const endIso = new Date(`${dateStr}T23:59:59.999+05:30`).toISOString();
+  return { startIso, endIso };
+};
+
+// Gives today's date as YYYY-MM-DD in IST (not UTC), so the report
+// doesn't default to yesterday's date in the early morning hours.
+const getTodayIST = () =>
+  new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
 export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
   selectedClientId,
@@ -414,6 +431,30 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
     }
   };
 
+  const checkSubmoduleEnabled = (modId: string, subId: string): boolean => {
+    if (!enabledModules || !enabledModules[modId]) {
+      return false;
+    }
+    if (modId === 'custom_tasks') {
+      const clientTasks = customTasks[selectedClientId] || [];
+      const task = clientTasks.find(t => t.id === subId);
+      if (task && task.subTasks && task.subTasks.length > 0) {
+        if (selectedCustomSignals[subId] !== undefined) {
+          return selectedCustomSignals[subId].length > 0;
+        }
+      }
+      return true;
+    }
+    const mod = allModules.find(m => m.id === modId);
+    const cat = mod?.categories?.find((c: any) => c.id === subId);
+    if (cat && cat.items && cat.items.length > 0) {
+      if (selectedSignals[subId] !== undefined) {
+        return selectedSignals[subId].length > 0;
+      }
+    }
+    return true;
+  };
+
   const handleSaveSchedule = async (
     promptId: string,
     submoduleId: string,
@@ -425,12 +466,14 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
   ) => {
     setSavingSchedulePromptId(promptId);
 
+    const isSubActive = checkSubmoduleEnabled(moduleId, submoduleId);
+
     // Immediate UI feedback update
     const scheduleObj = {
       tool: source,
       frequency,
       time: scheduleTime,
-      isActive: true
+      isActive: isSubActive
     };
 
     setModuleSchedules(prev => {
@@ -472,12 +515,11 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
         promptText,
         industry: industry || 'Unknown',
         frequency,
-        isActive: true
+        isActive: isSubActive
       };
 
       const clientPayload = {
-        scheduleTime,
-        isActive: true
+        scheduleTime
       };
 
       const [promptRes, clientRes] = await Promise.all([
@@ -549,7 +591,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
   const [retryingFailed, setRetryingFailed] = React.useState(false);
   const [retryingSubmoduleId, setRetryingSubmoduleId] = React.useState<string | null>(null);
   const [isLogsModalOpen, setIsLogsModalOpen] = React.useState(false);
-  const [logsActiveTab, setLogsActiveTab] = React.useState<'failed' | 'completed_skipped'>('failed');
+  const [logsActiveTab, setLogsActiveTab] = React.useState<'completed' | 'skipped' | 'failed'>('completed');
   const [logsPage, setLogsPage] = React.useState(1);
 
   // Retry Logs / Failed queue state
@@ -569,7 +611,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
 
   // Daily Report State
   const [isDailyReportOpen, setIsDailyReportOpen] = React.useState(false);
-  const [reportDate, setReportDate] = React.useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [reportDate, setReportDate] = React.useState<string>(() => getTodayIST());
   const [dailyReportLoading, setDailyReportLoading] = React.useState(false);
   const [selectedReportModuleId, setSelectedReportModuleId] = React.useState<string | null>(null);
   const [dailyReportJobs, setDailyReportJobs] = React.useState<any[]>([]);
@@ -607,17 +649,16 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
   const fetchArticleLogs = async (date: string | null = null) => {
     if (!selectedClientId) return;
     try {
-      const activeDate = date || reportDate || new Date().toISOString().slice(0, 10);
-      const startIso = `${activeDate}T00:00:00.000Z`;
-      const endIso = `${activeDate}T23:59:59.999Z`;
+      const activeDate = date || reportDate || getTodayIST();
+      const { startIso, endIso } = getISTDayBoundsUTC(activeDate);
 
       const { data, error } = await supabase
         .from('article_processing_log')
         .select('*')
         .eq('client_id', selectedClientId)
-        .gte('created_at', startIso)
-        .lte('created_at', endIso)
-        .order('created_at', { ascending: false });
+        .gte('processed_at', startIso)
+        .lte('processed_at', endIso)
+        .order('processed_at', { ascending: false });
 
       if (error || !data) {
         setArticleLogsBySubmodule({});
@@ -654,7 +695,11 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
 
   const fetchDailyReportSummary = (jobs: any[], logs: any[]) => {
     const totalFetched = jobs.reduce((sum, j) => sum + (j.count_fetched || 0), 0);
-    const totalProcessed = jobs.reduce((sum, j) => sum + (j.count_stored_final || 0), 0);
+    // CHANGED: count directly from article_processing_log instead of
+    // pipeline_job_status.count_stored_final -- that column is only set once
+    // by the original run and never updated by retries, so it goes stale
+    // the moment any article gets successfully retried.
+    const totalProcessed = logs.filter(l => l.status === 'completed').length;
     const totalFailed = logs.filter(l => l.status === 'failed').length;
 
     setDailySummary({
@@ -689,7 +734,9 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       const modLogs = logs.filter(l => subToModMap[l.submodule_id] === mod.id);
 
       const fetched = modJobs.reduce((sum, j) => sum + (j.count_fetched || 0), 0);
-      const processed = modJobs.reduce((sum, j) => sum + (j.count_stored_final || 0), 0);
+      // CHANGED: same fix as fetchDailyReportSummary -- count from logs, not
+      // the stale job-level counter.
+      const processed = modLogs.filter(l => l.status === 'completed').length;
       const failed = modLogs.filter(l => l.status === 'failed').length;
 
       return {
@@ -710,8 +757,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
     if (!selectedClientId) return;
     setDailyReportLoading(true);
     try {
-      const startIso = `${dateStr}T00:00:00.000Z`;
-      const endIso = `${dateStr}T23:59:59.999Z`;
+      const { startIso, endIso } = getISTDayBoundsUTC(dateStr);
 
       const [jobsRes, logsRes] = await Promise.all([
         supabase
@@ -724,8 +770,8 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
           .from('article_processing_log')
           .select('*')
           .eq('client_id', selectedClientId)
-          .gte('created_at', startIso)
-          .lte('created_at', endIso)
+          .gte('processed_at', startIso)
+          .lte('processed_at', endIso)
       ]);
 
       const jobs = jobsRes.data || [];
@@ -778,7 +824,10 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
       const afterUrlCheck = subJobs.reduce((sum, j) => sum + (j.count_after_url_check || 0), 0);
       const afterTopicDedup = subJobs.reduce((sum, j) => sum + (j.count_after_topic_dedup || 0), 0);
       const afterQualityFilter = subJobs.reduce((sum, j) => sum + (j.count_after_quality_filter || 0), 0);
-      const signalsStored = subJobs.reduce((sum, j) => sum + (j.count_stored_final || 0), 0);
+      // CHANGED: same fix -- signalsStored now counts real completed log
+      // rows instead of the stale job-level counter, so it stays accurate
+      // after retries.
+      const signalsStored = subLogs.filter(l => l.status === 'completed').length;
 
       const completed = subLogs.filter(l => l.status === 'completed').length;
       const skipped = subLogs.filter(l => l.status === 'skipped').length;
@@ -824,9 +873,8 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
     setLogsActiveTab('failed');
     setLogsPage(1);
     
-    const activeDate = reportDate || new Date().toISOString().slice(0, 10);
-    const startIso = `${activeDate}T00:00:00.000Z`;
-    const endIso = `${activeDate}T23:59:59.999Z`;
+    const activeDate = reportDate || getTodayIST();
+    const { startIso, endIso } = getISTDayBoundsUTC(activeDate);
 
     await fetchArticleLogs(activeDate);
     
@@ -891,225 +939,72 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
   };
 
   const handleRetrySingleArticle = async (item: any) => {
-    if (!selectedClientId || retryingFailed) return;
-    setRetryingFailed(true);
-    setActiveRetryArticleId(item.id);
-
-    setRetryQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'retrying' } : q));
-
-    await new Promise(r => setTimeout(r, 1200));
-
-    const processedTime = new Date().toISOString();
-
-    try {
-      if (typeof item.id === 'string' && !item.id.startsWith('failed-')) {
-        await supabase
-          .from('article_processing_log')
-          .update({
-            status: 'completed',
-            error_message: null,
-            processed_at: processedTime
-          })
-          .eq('id', item.id);
-      }
-    } catch (err) {
-      console.warn("Error updating single article retry in Supabase:", err);
-    }
-
-    setRetryQueue(prev => prev.map(q => q.id === item.id ? {
-      ...q,
-      status: 'completed',
-      processed_at: processedTime,
-      error_message: 'Successfully reprocessed and signals extracted'
-    } : q));
-
-    // Update in local logs state
-    setArticleLogsBySubmodule(prev => {
-      const next = { ...prev };
-      Object.keys(next).forEach(k => {
-        next[k] = next[k].map(log => 
-          (log.id === item.id || log.title === item.title)
-            ? { ...log, status: 'completed', error_message: null, processed_at: processedTime }
-            : log
-        );
-      });
-      return next;
-    });
-
-    setActiveRetryArticleId(null);
-    setRetryingFailed(false);
-    showToast(`Article "${item.title}" successfully reprocessed!`, "success");
-    await fetchArticleLogs(reportDate);
-    await fetchArticleLogs();
+    // There's no backend endpoint to retry one specific article -- only
+    // per-client or per-submodule. This retries the whole submodule that
+    // article belongs to (which will also pick up any other failed
+    // articles in that same submodule).
+    await handleRetryFailed(item.submodule_id || undefined);
   };
 
   const handleRetryFailed = async (targetSubmoduleId?: string) => {
-    if (!selectedClientId) return;
+  if (!selectedClientId) return;
 
-    // 1. Gather all failed articles for the target scope
-    let failedItems: any[] = [];
-    if (targetSubmoduleId) {
-      const logs = articleLogsBySubmodule[targetSubmoduleId] || [];
-      failedItems = logs.filter(l => l.status === 'failed');
-    } else {
-      Object.values(articleLogsBySubmodule).forEach(logs => {
-        logs.forEach(l => {
-          if (l.status === 'failed') failedItems.push(l);
-        });
-      });
-      if (dailyReportLogs.length > 0) {
-        dailyReportLogs.forEach(l => {
-          if (l.status === 'failed' && !failedItems.some(f => f.id === l.id)) {
-            failedItems.push(l);
-          }
-        });
-      }
-    }
+  setRetryingFailed(true);
+  setRetryingSubmoduleId(targetSubmoduleId || null);
 
-    try {
-      const activeDate = reportDate || new Date().toISOString().slice(0, 10);
-      const startIso = `${activeDate}T00:00:00.000Z`;
-      const endIso = `${activeDate}T23:59:59.999Z`;
-
-      let q = supabase
-        .from('article_processing_log')
-        .select('*')
-        .eq('client_id', selectedClientId)
-        .gte('created_at', startIso)
-        .lte('created_at', endIso)
-        .eq('status', 'failed');
-      if (targetSubmoduleId) q = q.eq('submodule_id', targetSubmoduleId);
-      const { data: dbFailed } = await q.order('created_at', { ascending: false });
-      if (dbFailed && dbFailed.length > 0) {
-        const seen = new Set(failedItems.map(f => f.id));
-        dbFailed.forEach(f => {
-          if (!seen.has(f.id)) {
-            failedItems.push(f);
-            seen.add(f.id);
-          }
-        });
-      }
-    } catch (err) {
-      console.warn("Could not query DB failed logs:", err);
-    }
-
-    // If still 0, create queue from available failed stats or warn
-    let queue = failedItems.map((item, idx) => ({
-      id: item.id || `failed-${idx}`,
-      submodule_id: item.submodule_id || targetSubmoduleId || '',
-      submodule_name: dbPrompts.find(p => (p.submodule_id || p.custom_task_id) === item.submodule_id)?.submodules?.submodule_name ||
-                      allSubmodulesList.find(s => s.id === item.submodule_id)?.name ||
-                      item.submodule_id || 'Pipeline Signal',
-      title: item.title || item.article_title || item.url || `Article #${idx + 1}`,
-      status: 'pending' as const,
-      error_message: item.error_message || item.message || 'Processing failed previously',
-      created_at: item.created_at,
-      processed_at: item.processed_at
-    }));
-
-    if (queue.length === 0) {
-      // If daily report or submodules show failed count > 0, generate placeholders to retry
-      const countToRetry = targetSubmoduleId 
-        ? (submoduleReportRows.find(r => r.submoduleId === targetSubmoduleId)?.failed || 1)
-        : (dailySummary.totalFailed || 1);
-      
-      queue = Array.from({ length: Math.max(1, countToRetry) }, (_, idx) => ({
-        id: `failed-item-${Date.now()}-${idx}`,
-        submodule_id: targetSubmoduleId || 'all',
-        submodule_name: targetSubmoduleId 
-          ? (dbPrompts.find(p => (p.submodule_id || p.custom_task_id) === targetSubmoduleId)?.submodules?.submodule_name || 'Submodule')
-          : 'Collection Stream',
-        title: `Failed Article Signal #${idx + 1}`,
-        status: 'pending' as const,
-        error_message: 'Extraction timeout on previous run',
-        created_at: new Date().toISOString(),
-        processed_at: undefined
-      }));
-    }
-
-    setRetryQueue(queue);
-    setRetryingFailed(true);
-    setRetryingSubmoduleId(targetSubmoduleId || null);
-    setRetryLogsFilterSubmoduleId(targetSubmoduleId || null);
-    setLogsModalSubmoduleId(targetSubmoduleId || null);
-    setLogsActiveTab('failed');
-    setIsLogsModalOpen(true);
-
-    // Call upstream retry endpoint in background
-    fetch(`${import.meta.env.VITE_API_URL}/retry-failed/${selectedClientId}`, {
+  // Fire the real backend retry -- this is the ONLY place that actually
+  // reprocesses articles. We do not simulate or fake any outcome here.
+  try {
+    await fetch(`${import.meta.env.VITE_API_URL}/retry-failed/${selectedClientId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(targetSubmoduleId ? { submoduleId: targetSubmoduleId } : {})
-    }).catch(e => console.warn("Backend retry error:", e));
-
-    showToast(`Retrying ${queue.length} failed article${queue.length > 1 ? 's' : ''}...`, "success");
-
-    // Process failed articles sequentially:
-    // Beside each failed article when it runs, show spinning next to that article,
-    // and when completed show completed in that log and jump to next article!
-    for (let i = 0; i < queue.length; i++) {
-      const currentItem = queue[i];
-      setActiveRetryArticleId(currentItem.id);
-
-      // Set status to retrying
-      setRetryQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status: 'retrying' } : q));
-
-      // Wait to simulate processing
-      await new Promise(r => setTimeout(r, 1200));
-
-      const processedTime = new Date().toISOString();
-
-      // Update in Supabase if a real ID exists
-      try {
-        if (typeof currentItem.id === 'string' && !currentItem.id.startsWith('failed-')) {
-          await supabase
-            .from('article_processing_log')
-            .update({
-              status: 'completed',
-              error_message: null,
-              processed_at: processedTime
-            })
-            .eq('id', currentItem.id);
-        }
-      } catch (err) {
-        console.warn("Error updating Supabase article log:", err);
-      }
-
-      // Mark as completed in retryQueue
-      setRetryQueue(prev => prev.map((q, idx) => idx === i ? { 
-        ...q, 
-        status: 'completed', 
-        processed_at: processedTime,
-        error_message: 'Successfully reprocessed and signals extracted'
-      } : q));
-
-      // Update in articleLogsBySubmodule so that the completed log moves directly into completed tab
-      setArticleLogsBySubmodule(prev => {
-        const next = { ...prev };
-        Object.keys(next).forEach(k => {
-          next[k] = next[k].map(log => 
-            (log.id === currentItem.id || log.title === currentItem.title)
-              ? { ...log, status: 'completed', error_message: null, processed_at: processedTime }
-              : log
-          );
-        });
-        return next;
-      });
-    }
-
-    setActiveRetryArticleId(null);
+    });
+  } catch (e) {
+    console.warn("Backend retry error:", e);
     setRetryingFailed(false);
     setRetryingSubmoduleId(null);
+    showToast("Failed to start retry", "error");
+    return;
+  }
 
-    // Refresh logs & reports so that these retried articles immediately move into completed logs
-    await fetchArticleLogs(reportDate);
-    if (isDailyReportOpen) {
-      await fetchDailyReportData(reportDate);
+  showToast("Retrying failed articles...", "success");
+
+  // Poll the real failed-count endpoint until it reaches 0 or stops
+  // changing (e.g. stuck on a rate limit), then refresh from the DB.
+  let lastCount: number | null = null;
+  let stableTicks = 0;
+
+  const poll = async () => {
+    try {
+      const url = targetSubmoduleId
+        ? `${import.meta.env.VITE_API_URL}/failed-count/${selectedClientId}?submoduleId=${targetSubmoduleId}`
+        : `${import.meta.env.VITE_API_URL}/failed-count/${selectedClientId}`;
+      const res = await fetch(url);
+      const { count } = await res.json();
+
+      if (count === 0 || count === lastCount) {
+        stableTicks = count === lastCount ? stableTicks + 1 : 0;
+        if (count === 0 || stableTicks >= 3) {
+          setRetryingFailed(false);
+          setRetryingSubmoduleId(null);
+          await fetchArticleLogs(reportDate);
+          if (isDailyReportOpen) await fetchDailyReportData(reportDate);
+          showToast(count === 0 ? "Retry complete!" : "Retry paused (rate limited) — will resume automatically.", "success");
+          return;
+        }
+      }
+      lastCount = count;
+      setTimeout(poll, 3000);
+    } catch (e) {
+      console.warn("Poll error:", e);
+      setRetryingFailed(false);
+      setRetryingSubmoduleId(null);
     }
-    await fetchArticleLogs();
-
-    showToast("Retry complete! All failed articles moved to completed logs.", "success");
   };
+
+  setTimeout(poll, 3000);
+};
 
   React.useEffect(() => {
     if (!selectedClientId) {
@@ -2080,6 +1975,35 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
 
                         const effectiveStatus = promptStatus;
 
+                        // pipeline_job_status.status can stay stuck on 'failed' forever --
+                        // retrying an article updates article_processing_log, not this
+                        // job-level column. So show "Failed" only if a real failed article
+                        // row still exists for this job; otherwise treat it as completed.
+                        const jobFailedArticleCount = promptStatus.jobId
+                          ? promptLogs.filter(l => l.job_id === promptStatus.jobId && l.status === 'failed').length
+                          : promptLogs.filter(l => l.status === 'failed').length;
+                        const displayStatus = effectiveStatus?.status === 'failed' && jobFailedArticleCount === 0
+                          ? 'completed'
+                          : effectiveStatus?.status;
+
+                        // NEW: live count of this job's articles currently mid-retry.
+                        // The backend sets status='retrying' the instant it picks an
+                        // article up (manual button OR the automatic hourly sweep),
+                        // and this component already re-fetches article logs every
+                        // 5s regardless of any button click -- so this reflects
+                        // background retries too, not just ones started from here.
+                        const retryingCount = promptStatus.jobId
+                          ? promptLogs.filter(l => l.job_id === promptStatus.jobId && l.status === 'retrying').length
+                          : promptLogs.filter(l => l.status === 'retrying').length;
+
+                          // NEW: scopes the "Article Log" summary line to only the
+                        // current run's job_id, instead of every run logged today,
+                        // so re-running the same prompt shows a fresh count instead
+                        // of accumulating on top of the previous run's numbers.
+                        const currentRunLogs = promptStatus.jobId
+                          ? promptLogs.filter(l => l.job_id === promptStatus.jobId)
+                          : promptLogs;
+
                         return (
                           <div key={prompt.id} className="space-y-3 mb-6 last:mb-0">
                             {confirmDeleteModuleId === prompt.id ? (
@@ -2135,21 +2059,26 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] border border-slate-200/50 bg-slate-50 text-slate-500 font-bold text-[9.5px] leading-tight select-none">
                                                 <span>Never run</span>
                                               </span>
-                                            ) : effectiveStatus.status === 'completed' ? (
+                                            ) : retryingCount > 0 ? (
+                                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] border border-amber-200/50 bg-amber-50 text-amber-700 font-bold text-[9.5px] leading-tight select-none">
+                                                <Loader2 className="h-2.5 w-2.5 animate-spin text-amber-600" />
+                                                <span>Retrying ({retryingCount})</span>
+                                              </span>
+                                            ) : displayStatus === 'completed' ? (
                                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] border border-emerald-200/50 bg-emerald-50 text-emerald-700 font-bold text-[9.5px] leading-tight select-none">
                                                 <CheckCircle2 className="h-2.5 w-2.5 text-emerald-500" />
                                                 <span>Completed</span>
                                               </span>
-                                            ) : effectiveStatus.status === 'failed' ? (
+                                            ) : displayStatus === 'failed' ? (
                                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] border border-red-200/50 bg-red-50 text-red-700 font-bold text-[9.5px] leading-tight select-none">
                                                 <ShieldAlert className="h-2.5 w-2.5 text-red-500" />
                                                 <span>Failed</span>
                                               </span>
-                                            ) : effectiveStatus.status === 'running' ? (
+                                            ) : displayStatus === 'running' ? (
                                               null
                                             ) : (
                                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[4px] border border-slate-200/50 bg-slate-50 text-slate-500 font-bold text-[9.5px] leading-tight select-none">
-                                                <span>{effectiveStatus.status}</span>
+                                                <span>{displayStatus}</span>
                                               </span>
                                             )}
                                             <button
@@ -2502,7 +2431,17 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                           <span>After URL Dedup: <strong className="text-slate-700 font-bold">{promptStatus.counts?.afterUrlCheck ?? 0}</strong></span>
                                           <span>After Topic Dedup: <strong className="text-slate-700 font-bold">{promptStatus.counts?.afterTopicDedup ?? 0}</strong></span>
                                           <span>After Quality Filter: <strong className="text-slate-700 font-bold">{promptStatus.counts?.afterQualityFilter ?? 0}</strong></span>
-                                          <span>Signals Stored: <strong className="text-slate-700 font-bold">{promptStatus.counts?.storedFinal ?? 0}</strong></span>
+                                          <span>Signals Stored: <strong className="text-slate-700 font-bold">
+                                            {promptStatus.jobId
+                                              ? promptLogs.filter(l => l.job_id === promptStatus.jobId && l.status === 'completed').length
+                                              : promptStatus.counts?.storedFinal ?? 0}
+                                          </strong></span>
+                                          {retryingCount > 0 && (
+                                            <span className="inline-flex items-center gap-1 text-amber-700 font-bold">
+                                              <Loader2 className="h-3 w-3 animate-spin" />
+                                              Retrying {retryingCount} article{retryingCount > 1 ? 's' : ''}...
+                                            </span>
+                                          )}
                                         </div>
                                       </div>
 
@@ -2511,7 +2450,10 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                         <div className="flex items-center gap-3 text-[10.5px]">
                                           <span className="font-bold text-slate-700">Article Log:</span>
                                           <span className="text-slate-500">
-                                            Total: {promptLogs.length} | Completed: {promptLogs.filter(l => l.status === 'completed').length} | Skipped: {promptLogs.filter(l => l.status === 'skipped').length} | Failed: {promptLogs.filter(l => l.status === 'failed').length}
+                                            Total: {currentRunLogs.length} | Completed: {currentRunLogs.filter(l => l.status === 'completed').length} | Skipped: {currentRunLogs.filter(l => l.status === 'skipped').length} | Failed: {currentRunLogs.filter(l => l.status === 'failed').length}
+                                            {retryingCount > 0 && (
+                                              <> | <span className="text-amber-700 font-bold">Retrying: {retryingCount}</span></>
+                                            )}
                                           </span>
                                         </div>
                                         <div className="flex items-center gap-2">
@@ -2621,31 +2563,9 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                         <span className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider block mb-1">Signals Stored</span>
                         <span className="text-[26px] font-extrabold text-emerald-700 font-mono tracking-tight">{dailySummary.totalProcessed}</span>
                       </div>
-                      <div className="bg-red-50/50 border border-red-200 rounded-[8px] p-4 text-center flex flex-col items-center justify-between">
-                        <div>
-                          <span className="text-[11px] font-bold text-red-700 uppercase tracking-wider block mb-1">Total Failed</span>
-                          <span className="text-[26px] font-extrabold text-red-700 font-mono tracking-tight">{dailySummary.totalFailed}</span>
-                        </div>
-                        {dailySummary.totalFailed > 0 && (
-                          <div className="mt-2 flex items-center gap-1.5 flex-wrap justify-center">
-                            <button
-                              onClick={() => handleRetryFailed()}
-                              disabled={retryingFailed}
-                              className="inline-flex items-center gap-1.5 px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded-[4px] text-[10.5px] font-bold transition-all active:scale-95 disabled:opacity-75 cursor-pointer shadow-xs"
-                            >
-                              <RefreshCw className={`h-3 w-3 ${retryingFailed ? 'animate-spin' : ''}`} />
-                              {retryingFailed ? "Retrying..." : "Retry Failed"}
-                            </button>
-                            <button
-                              onClick={() => openRetryLogs(null)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-red-50 text-red-700 border border-red-300 rounded-[4px] text-[10.5px] font-bold transition-colors cursor-pointer shadow-xs"
-                              title="Show logs for failed articles"
-                            >
-                              <FileText className="h-3 w-3 text-red-600" />
-                              Show Logs
-                            </button>
-                          </div>
-                        )}
+                      <div className="bg-red-50/50 border border-red-200 rounded-[8px] p-4 text-center">
+                        <span className="text-[11px] font-bold text-red-700 uppercase tracking-wider block mb-1">Total Failed</span>
+                        <span className="text-[26px] font-extrabold text-red-700 font-mono tracking-tight">{dailySummary.totalFailed}</span>
                       </div>
                     </div>
                   </div>
@@ -2813,7 +2733,7 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
         </div>
       )}
 
-      {/* Unified 2-Tab Article Processing & Retry Logs Modal */}
+      {/* Unified 3-Tab Article Processing & Retry Logs Modal */}
       {isLogsModalOpen && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 animate-in fade-in duration-150">
           <div className="bg-white rounded-lg shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col font-sans border border-slate-200">
@@ -2870,18 +2790,58 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
               </div>
             </div>
 
-            {/* Tab Navigation Bar */}
+            {/* 3-Tab Navigation Bar: 1. Completed, 2. Skipped, 3. Failed */}
             {(() => {
               const allScopeLogs = logsModalSubmoduleId
                 ? (articleLogsBySubmodule[logsModalSubmoduleId] || [])
                 : Object.values(articleLogsBySubmodule).flat();
               
-              const failedLogs = allScopeLogs.filter(l => l.status === 'failed');
-              const completedSkippedLogs = allScopeLogs.filter(l => l.status === 'completed' || l.status === 'skipped');
+              const completedLogs = allScopeLogs.filter(l => l.status === 'completed');
+              const skippedLogs = allScopeLogs.filter(l => l.status === 'skipped');
+              const failedLogs = allScopeLogs.filter(l => l.status === 'failed' || (l.status === 'retrying' && l.status !== 'completed'));
 
               return (
                 <div className="flex items-center justify-between px-5 border-b border-slate-200 bg-slate-50/40">
                   <div className="flex items-center gap-2">
+                    {/* Tab 1: Completed */}
+                    <button
+                      onClick={() => {
+                        setLogsActiveTab('completed');
+                        setLogsPage(1);
+                      }}
+                      className={`flex items-center gap-2 px-3.5 py-2.5 text-[12px] font-bold border-b-2 transition-all cursor-pointer ${
+                        logsActiveTab === 'completed'
+                          ? 'border-emerald-600 text-emerald-700 bg-white shadow-xs rounded-t-md'
+                          : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-100/60'
+                      }`}
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                      <span>Completed</span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        {completedLogs.length}
+                      </span>
+                    </button>
+
+                    {/* Tab 2: Skipped */}
+                    <button
+                      onClick={() => {
+                        setLogsActiveTab('skipped');
+                        setLogsPage(1);
+                      }}
+                      className={`flex items-center gap-2 px-3.5 py-2.5 text-[12px] font-bold border-b-2 transition-all cursor-pointer ${
+                        logsActiveTab === 'skipped'
+                          ? 'border-amber-600 text-amber-700 bg-white shadow-xs rounded-t-md'
+                          : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-100/60'
+                      }`}
+                    >
+                      <SkipForward className="h-3.5 w-3.5 text-amber-600" />
+                      <span>Skipped</span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[10px] font-extrabold bg-amber-50 text-amber-700 border border-amber-200">
+                        {skippedLogs.length}
+                      </span>
+                    </button>
+
+                    {/* Tab 3: Failed Articles */}
                     <button
                       onClick={() => {
                         setLogsActiveTab('failed');
@@ -2903,24 +2863,6 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                         {failedLogs.length}
                       </span>
                     </button>
-
-                    <button
-                      onClick={() => {
-                        setLogsActiveTab('completed_skipped');
-                        setLogsPage(1);
-                      }}
-                      className={`flex items-center gap-2 px-3.5 py-2.5 text-[12px] font-bold border-b-2 transition-all cursor-pointer ${
-                        logsActiveTab === 'completed_skipped'
-                          ? 'border-emerald-600 text-emerald-700 bg-white shadow-xs rounded-t-md'
-                          : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-100/60'
-                      }`}
-                    >
-                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-                      <span>Completed & Skipped</span>
-                      <span className="px-1.5 py-0.2 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                        {completedSkippedLogs.length}
-                      </span>
-                    </button>
                   </div>
 
                   {logsModalSubmoduleId && (
@@ -2938,28 +2880,191 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
               );
             })()}
 
-            {/* Live Progress Bar when retrying */}
+            {/* Retrying indicator -- real status comes from polling, nothing simulated */}
             {retryingFailed && (
-              <div className="px-5 py-2.5 bg-amber-50/70 border-b border-amber-100 flex flex-col gap-1.5">
-                <div className="flex items-center justify-between text-[11px] text-amber-900 font-semibold">
-                  <span className="flex items-center gap-1.5">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600" />
-                    Retrying article {retryQueue.filter(q => q.status === 'completed').length + 1} of {retryQueue.length}...
-                  </span>
-                  <span className="font-mono font-bold">
-                    {Math.round((retryQueue.filter(q => q.status === 'completed').length / (retryQueue.length || 1)) * 100)}%
-                  </span>
-                </div>
-                <div className="w-full bg-amber-200/60 rounded-full h-1.5 overflow-hidden">
-                  <div 
-                    className="bg-amber-600 h-1.5 rounded-full transition-all duration-300"
-                    style={{ width: `${(retryQueue.filter(q => q.status === 'completed').length / (retryQueue.length || 1)) * 100}%` }}
-                  />
-                </div>
+              <div className="px-5 py-2.5 bg-amber-50/70 border-b border-amber-100 flex items-center gap-1.5 text-[11px] text-amber-900 font-semibold">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600" />
+                Retrying failed articles... this may take a moment.
               </div>
             )}
 
-            {/* Tab 1: Failed Articles Tab Content */}
+            {/* Tab 1: Completed Articles Tab Content */}
+            {logsActiveTab === 'completed' && (
+              <div className="flex-1 overflow-auto p-4">
+                {(() => {
+                  const modalLogs = logsModalSubmoduleId 
+                    ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) 
+                    : Object.values(articleLogsBySubmodule).flat().sort((a, b) => {
+                        const timeA = new Date(a.processed_at || a.created_at || 0).getTime();
+                        const timeB = new Date(b.processed_at || b.created_at || 0).getTime();
+                        return timeB - timeA;
+                      });
+
+                  const completedLogs = modalLogs.filter(l => l.status === 'completed');
+
+                  if (completedLogs.length === 0) {
+                    return (
+                      <div className="text-center py-12 text-slate-500">
+                        <CheckCircle2 className="h-9 w-9 text-slate-300 mx-auto mb-2" />
+                        <p className="text-[13px] font-semibold text-slate-700">No completed articles yet</p>
+                        <p className="text-[11px] text-slate-400 mt-1">Processed articles will appear here once pipeline jobs run or retries finish.</p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="border border-slate-200 rounded-[6px] overflow-hidden">
+                      <table className="w-full text-left text-[11px]">
+                        <thead className="bg-slate-50 border-b border-slate-200">
+                          <tr>
+                            <th className="px-3 py-2 font-bold text-slate-600">Article Title</th>
+                            <th className="px-3 py-2 font-bold text-slate-600 w-36">Submodule</th>
+                            <th className="px-3 py-2 font-bold text-slate-600 w-24">Status</th>
+                            <th className="px-3 py-2 font-bold text-slate-600">Message / Signals</th>
+                            <th className="px-3 py-2 font-bold text-slate-600 w-36">Processed At</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {completedLogs.slice((logsPage - 1) * 20, logsPage * 20).map((log, idx) => {
+                            const title = log.title || log.article_title || log.url || 'Untitled Article';
+                            const subName = log.submodule_name ||
+                              dbPrompts.find(p => (p.submodule_id || p.custom_task_id) === log.submodule_id)?.submodules?.submodule_name ||
+                              allSubmodulesList.find(s => s.id === log.submodule_id)?.name ||
+                              log.submodule_id || '-';
+                            const message = log.error_message || log.message || 'Signals saved successfully';
+                            const processedAt = log.processed_at || log.created_at;
+                            let formattedDate = '-';
+                            if (processedAt) {
+                              try {
+                                formattedDate = new Date(processedAt).toLocaleString();
+                              } catch (e) {
+                                formattedDate = String(processedAt);
+                              }
+                            }
+                            return (
+                              <tr key={log.id || idx} className="hover:bg-slate-50/50">
+                                <td className="px-3 py-2.5 font-medium text-slate-800 max-w-[280px]">
+                                  <div className="flex items-center gap-1.5 truncate" title={title}>
+                                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                                    <span className="truncate">{title}</span>
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2.5 text-slate-600 truncate max-w-[140px]" title={subName}>
+                                  <span className="px-1.5 py-0.5 bg-slate-100 rounded text-[10px] text-slate-700 font-medium truncate block">
+                                    {subName}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2.5">
+                                  <span className="px-1.5 py-0.5 rounded-[4px] font-bold text-[9px] uppercase tracking-wider bg-emerald-50 text-emerald-600 border border-emerald-200">
+                                    Completed
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2.5 text-slate-500 max-w-[200px] truncate" title={message}>
+                                  {message}
+                                </td>
+                                <td className="px-3 py-2.5 text-slate-500 whitespace-nowrap font-mono text-[10px]">
+                                  {formattedDate}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Tab 2: Skipped Articles Tab Content */}
+            {logsActiveTab === 'skipped' && (
+              <div className="flex-1 overflow-auto p-4">
+                {(() => {
+                  const modalLogs = logsModalSubmoduleId 
+                    ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) 
+                    : Object.values(articleLogsBySubmodule).flat().sort((a, b) => {
+                        const timeA = new Date(a.processed_at || a.created_at || 0).getTime();
+                        const timeB = new Date(b.processed_at || b.created_at || 0).getTime();
+                        return timeB - timeA;
+                      });
+
+                  const skippedLogs = modalLogs.filter(l => l.status === 'skipped');
+
+                  if (skippedLogs.length === 0) {
+                    return (
+                      <div className="text-center py-12 text-slate-500">
+                        <MinusCircle className="h-9 w-9 text-slate-300 mx-auto mb-2" />
+                        <p className="text-[13px] font-semibold text-slate-700">No skipped articles</p>
+                        <p className="text-[11px] text-slate-400 mt-1">Articles skipped by deduplication or relevance checks will appear here.</p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="border border-slate-200 rounded-[6px] overflow-hidden">
+                      <table className="w-full text-left text-[11px]">
+                        <thead className="bg-slate-50 border-b border-slate-200">
+                          <tr>
+                            <th className="px-3 py-2 font-bold text-slate-600">Article Title</th>
+                            <th className="px-3 py-2 font-bold text-slate-600 w-36">Submodule</th>
+                            <th className="px-3 py-2 font-bold text-slate-600 w-24">Status</th>
+                            <th className="px-3 py-2 font-bold text-slate-600">Reason / Filter Note</th>
+                            <th className="px-3 py-2 font-bold text-slate-600 w-36">Processed At</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {skippedLogs.slice((logsPage - 1) * 20, logsPage * 20).map((log, idx) => {
+                            const title = log.title || log.article_title || log.url || 'Untitled Article';
+                            const subName = log.submodule_name ||
+                              dbPrompts.find(p => (p.submodule_id || p.custom_task_id) === log.submodule_id)?.submodules?.submodule_name ||
+                              allSubmodulesList.find(s => s.id === log.submodule_id)?.name ||
+                              log.submodule_id || '-';
+                            const message = log.error_message || log.message || 'Filtered out during deduplication / relevance check';
+                            const processedAt = log.processed_at || log.created_at;
+                            let formattedDate = '-';
+                            if (processedAt) {
+                              try {
+                                formattedDate = new Date(processedAt).toLocaleString();
+                              } catch (e) {
+                                formattedDate = String(processedAt);
+                              }
+                            }
+                            return (
+                              <tr key={log.id || idx} className="hover:bg-slate-50/50">
+                                <td className="px-3 py-2.5 font-medium text-slate-800 max-w-[280px]">
+                                  <div className="flex items-center gap-1.5 truncate" title={title}>
+                                    <MinusCircle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                                    <span className="truncate">{title}</span>
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2.5 text-slate-600 truncate max-w-[140px]" title={subName}>
+                                  <span className="px-1.5 py-0.5 bg-slate-100 rounded text-[10px] text-slate-700 font-medium truncate block">
+                                    {subName}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2.5">
+                                  <span className="px-1.5 py-0.5 rounded-[4px] font-bold text-[9px] uppercase tracking-wider bg-amber-50 text-amber-700 border border-amber-200">
+                                    Skipped
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2.5 text-slate-500 max-w-[200px] truncate" title={message}>
+                                  {message}
+                                </td>
+                                <td className="px-3 py-2.5 text-slate-500 whitespace-nowrap font-mono text-[10px]">
+                                  {formattedDate}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* Tab 3: Failed Articles Tab Content */}
             {logsActiveTab === 'failed' && (
               <div className="flex-1 overflow-auto p-4">
                 {(() => {
@@ -2967,8 +3072,8 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                     ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) 
                     : Object.values(articleLogsBySubmodule).flat();
                   
-                  // Failed articles in state
-                  const failedLogs = modalLogs.filter(l => l.status === 'failed');
+                  // Failed or currently retrying articles
+                  const failedLogs = modalLogs.filter(l => l.status === 'failed' || (l.status === 'retrying' && l.status !== 'completed'));
 
                   if (failedLogs.length === 0 && !retryingFailed) {
                     return (
@@ -2976,17 +3081,17 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                         <CheckCircle2 className="h-10 w-10 text-emerald-500 mx-auto mb-2" />
                         <p className="text-[13px] font-bold text-slate-800">No Failed Articles</p>
                         <p className="text-[11.5px] text-slate-500 mt-1 max-w-sm mx-auto">
-                          All articles for this selection have been successfully processed and moved to Completed & Skipped logs.
+                          All articles for this selection have been successfully processed and moved to Completed logs.
                         </p>
                         <button 
                           onClick={() => {
-                            setLogsActiveTab('completed_skipped');
+                            setLogsActiveTab('completed');
                             setLogsPage(1);
                           }}
                           className="mt-4 inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-[6px] text-[11px] font-bold transition-colors cursor-pointer"
                         >
                           <CheckCircle2 className="h-3.5 w-3.5" />
-                          View Completed & Skipped Logs
+                          View Completed Logs
                         </button>
                       </div>
                     );
@@ -3075,8 +3180,9 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
                                   <button
                                     onClick={() => handleRetrySingleArticle(item)}
                                     disabled={retryingFailed}
-                                    className="px-2.5 py-1 text-[10px] font-bold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-[4px] transition-colors disabled:opacity-50 cursor-pointer"
+                                    className="px-2.5 py-1 text-[10px] font-bold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-[4px] transition-colors disabled:opacity-50 cursor-pointer flex items-center gap-1 ml-auto"
                                   >
+                                    {isActive && <Loader2 className="h-2.5 w-2.5 animate-spin text-red-600" />}
                                     Retry
                                   </button>
                                 </td>
@@ -3091,161 +3197,59 @@ export const DataCollectionTab: React.FC<DataCollectionTabProps> = ({
               </div>
             )}
 
-            {/* Tab 2: Completed & Skipped Tab Content */}
-            {logsActiveTab === 'completed_skipped' && (
-              <div className="flex-1 overflow-auto p-4">
-                {(() => {
-                  const modalLogs = logsModalSubmoduleId 
-                    ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) 
-                    : Object.values(articleLogsBySubmodule).flat().sort((a, b) => {
-                        const timeA = new Date(a.processed_at || a.created_at || 0).getTime();
-                        const timeB = new Date(b.processed_at || b.created_at || 0).getTime();
-                        return timeB - timeA;
-                      });
-
-                  const completedSkippedLogs = modalLogs.filter(l => l.status === 'completed' || l.status === 'skipped');
-
-                  if (completedSkippedLogs.length === 0) {
-                    return (
-                      <div className="text-center py-12 text-slate-500">
-                        <p className="text-[13px] font-semibold text-slate-700">No completed or skipped logs found.</p>
-                        <p className="text-[11px] text-slate-400 mt-1">Processed articles will appear here once pipeline jobs run or retries finish.</p>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div className="border border-slate-200 rounded-[6px] overflow-hidden">
-                      <table className="w-full text-left text-[11px]">
-                        <thead className="bg-slate-50 border-b border-slate-200">
-                          <tr>
-                            <th className="px-3 py-2 font-bold text-slate-600">Article Title</th>
-                            <th className="px-3 py-2 font-bold text-slate-600 w-36">Submodule</th>
-                            <th className="px-3 py-2 font-bold text-slate-600 w-24">Status</th>
-                            <th className="px-3 py-2 font-bold text-slate-600">Message / Signals</th>
-                            <th className="px-3 py-2 font-bold text-slate-600 w-32">Processed At</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {completedSkippedLogs.slice((logsPage - 1) * 20, logsPage * 20).map((log, idx) => {
-                            const title = log.title || log.article_title || log.url || 'Untitled Article';
-                            const subName = log.submodule_name ||
-                              dbPrompts.find(p => (p.submodule_id || p.custom_task_id) === log.submodule_id)?.submodules?.submodule_name ||
-                              allSubmodulesList.find(s => s.id === log.submodule_id)?.name ||
-                              log.submodule_id || '-';
-                            const message = log.error_message || log.message || (log.status === 'completed' ? 'Signals saved successfully' : '-');
-                            const processedAt = log.processed_at || log.created_at;
-                            let formattedDate = '-';
-                            if (processedAt) {
-                              try {
-                                formattedDate = new Date(processedAt).toLocaleString();
-                              } catch (e) {
-                                formattedDate = String(processedAt);
-                              }
-                            }
-                            return (
-                              <tr key={log.id || idx} className="hover:bg-slate-50/50">
-                                <td className="px-3 py-2 font-medium text-slate-800 max-w-[280px]">
-                                  <div className="flex items-center gap-1.5 truncate" title={title}>
-                                    {log.status === 'completed' ? (
-                                      <CheckCircle2 className="h-3 w-3 text-emerald-600 shrink-0" />
-                                    ) : (
-                                      <span className="h-2 w-2 rounded-full bg-slate-300 shrink-0" />
-                                    )}
-                                    <span className="truncate">{title}</span>
-                                  </div>
-                                </td>
-                                <td className="px-3 py-2 text-slate-600 truncate max-w-[140px]" title={subName}>
-                                  <span className="px-1.5 py-0.5 bg-slate-100 rounded text-[10px] text-slate-700 font-medium truncate block">
-                                    {subName}
-                                  </span>
-                                </td>
-                                <td className="px-3 py-2">
-                                  <span className={`px-1.5 py-0.5 rounded-[4px] font-bold text-[9px] uppercase tracking-wider ${
-                                    log.status === 'completed' ? 'bg-emerald-50 text-emerald-600 border border-emerald-200' :
-                                    'bg-slate-100 text-slate-600 border border-slate-200'
-                                  }`}>
-                                    {log.status}
-                                  </span>
-                                </td>
-                                <td className="px-3 py-2 text-slate-500 max-w-[200px] truncate" title={message}>
-                                  {message}
-                                </td>
-                                <td className="px-3 py-2 text-slate-500 whitespace-nowrap">
-                                  {formattedDate}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  );
-                })()}
-              </div>
-            )}
-
             {/* Modal Footer */}
             <div className="px-5 py-3 border-t border-slate-100 flex items-center justify-between bg-slate-50 rounded-b-lg">
-              {logsActiveTab === 'completed_skipped' ? (
-                (() => {
-                  const modalLogs = logsModalSubmoduleId 
-                    ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) 
-                    : Object.values(articleLogsBySubmodule).flat();
-                  const completedSkippedLogs = modalLogs.filter(l => l.status === 'completed' || l.status === 'skipped');
+              {(() => {
+                const modalLogs = logsModalSubmoduleId 
+                  ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) 
+                  : Object.values(articleLogsBySubmodule).flat();
+                
+                const currentTabLogs = logsActiveTab === 'completed' 
+                  ? modalLogs.filter(l => l.status === 'completed')
+                  : logsActiveTab === 'skipped'
+                  ? modalLogs.filter(l => l.status === 'skipped')
+                  : modalLogs.filter(l => l.status === 'failed' || (l.status === 'retrying' && l.status !== 'completed'));
 
-                  if (completedSkippedLogs.length > 20) {
-                    return (
-                      <div className="flex items-center justify-between w-full">
-                        <span className="text-[11px] text-slate-500">
-                          Showing {(logsPage - 1) * 20 + 1} to {Math.min(logsPage * 20, completedSkippedLogs.length)} of {completedSkippedLogs.length} logs
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <button 
-                            onClick={() => setLogsPage(p => Math.max(1, p - 1))}
-                            disabled={logsPage === 1}
-                            className="px-2.5 py-1 text-[11px] font-medium bg-white border border-slate-200 rounded-[4px] disabled:opacity-50 hover:bg-slate-50 cursor-pointer"
-                          >
-                            Previous
-                          </button>
-                          <button 
-                            onClick={() => setLogsPage(p => Math.min(Math.ceil(completedSkippedLogs.length / 20), p + 1))}
-                            disabled={logsPage >= Math.ceil(completedSkippedLogs.length / 20)}
-                            className="px-2.5 py-1 text-[11px] font-medium bg-white border border-slate-200 rounded-[4px] disabled:opacity-50 hover:bg-slate-50 cursor-pointer"
-                          >
-                            Next
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  }
-                  return (
-                    <span className="text-[11px] text-slate-500">
-                      Total {completedSkippedLogs.length} completed/skipped logs
-                    </span>
-                  );
-                })()
-              ) : (
-                (() => {
-                  const modalLogs = logsModalSubmoduleId 
-                    ? (articleLogsBySubmodule[logsModalSubmoduleId] || []) 
-                    : Object.values(articleLogsBySubmodule).flat();
-                  const failedLogs = modalLogs.filter(l => l.status === 'failed');
+                if (currentTabLogs.length > 20) {
                   return (
                     <div className="flex items-center justify-between w-full">
                       <span className="text-[11px] text-slate-500">
-                        {failedLogs.length > 0 ? `${failedLogs.length} failed article${failedLogs.length > 1 ? 's' : ''} awaiting retry` : '0 failed articles'}
+                        Showing {(logsPage - 1) * 20 + 1} to {Math.min(logsPage * 20, currentTabLogs.length)} of {currentTabLogs.length} {logsActiveTab} logs
                       </span>
-                      <button
-                        onClick={() => setIsLogsModalOpen(false)}
-                        className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-100 rounded-[4px] font-bold text-slate-700 text-[11px] transition-colors cursor-pointer"
-                      >
-                        Close
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button 
+                          onClick={() => setLogsPage(p => Math.max(1, p - 1))}
+                          disabled={logsPage === 1}
+                          className="px-2.5 py-1 text-[11px] font-medium bg-white border border-slate-200 rounded-[4px] disabled:opacity-50 hover:bg-slate-50 cursor-pointer"
+                        >
+                          Previous
+                        </button>
+                        <button 
+                          onClick={() => setLogsPage(p => Math.min(Math.ceil(currentTabLogs.length / 20), p + 1))}
+                          disabled={logsPage >= Math.ceil(currentTabLogs.length / 20)}
+                          className="px-2.5 py-1 text-[11px] font-medium bg-white border border-slate-200 rounded-[4px] disabled:opacity-50 hover:bg-slate-50 cursor-pointer"
+                        >
+                          Next
+                        </button>
+                      </div>
                     </div>
                   );
-                })()
-              )}
+                }
+
+                return (
+                  <div className="flex items-center justify-between w-full">
+                    <span className="text-[11px] text-slate-500">
+                      Total {currentTabLogs.length} {logsActiveTab} logs
+                    </span>
+                    <button
+                      onClick={() => setIsLogsModalOpen(false)}
+                      className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-100 rounded-[4px] font-bold text-slate-700 text-[11px] transition-colors cursor-pointer"
+                    >
+                      Close
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>

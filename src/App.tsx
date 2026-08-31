@@ -197,12 +197,12 @@ export default function App() {
   }, []);
 
   // Customer state mutation callbacks
-  const handleAddCustomer = async (newCustPayload: Omit<Customer, 'id' | 'joinedDate' | 'apiCallsCount'>) => {
+  const handleAddCustomer = async (newCustPayload: Omit<Customer, 'id' | 'joinedDate' | 'apiCallsCount'>): Promise<string | undefined> => {
     try {
       const clientPayload = {
         company_name: newCustPayload.company || newCustPayload.name,
         industry: newCustPayload.sector,
-        location: newCustPayload.location || "London, UK",
+        location: newCustPayload.location || "",
         client_description: newCustPayload.description || "",
         enabled_modules: []
       };
@@ -214,8 +214,9 @@ export default function App() {
 
       if (insertClientError) throw insertClientError;
 
+      let newClientId: string | undefined;
       if (newClientData && newClientData[0]) {
-        const newClientId = newClientData[0].id;
+        newClientId = newClientData[0].id;
         const toArray = (str: string | undefined) => str ? str.split(",").map(s => s.trim()).filter(Boolean) : [];
         const icpPayload = {
           client_id: newClientId,
@@ -233,9 +234,11 @@ export default function App() {
       
       await loadConsoleData(true);
       showToast("Client added successfully!");
+      return newClientId;
     } catch (err: any) {
       console.error("Error creating customer", err);
       showToast(err.message || "Error creating client", 'error');
+      return undefined;
     }
   };
 
@@ -356,14 +359,52 @@ export default function App() {
 
   const handleDeleteCustomer = async (id: string) => {
     try {
-      await supabase.schema('admin').from("client_icp").delete().eq("client_id", id);
-      await supabase.schema('admin').from("client_users").delete().eq("client_id", id);
-      await supabase.schema('admin').from("clients").delete().eq("id", id);
+      // Attempt server endpoint (handles auth user cleanup and cascading admin deletes)
+      try {
+        await fetch("/api/admin/delete-client", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clientId: id, id })
+        });
+      } catch (srvErr) {
+        console.warn("Server delete-client endpoint failed, falling back to direct client deletion:", srvErr);
+      }
+
+      // Cleanup child records directly in Supabase
+      try {
+        const { data: tasks } = await supabase.schema('admin').from("custom_tasks").select("id").eq("client_id", id);
+        if (tasks && tasks.length > 0) {
+          const taskIds = tasks.map(t => t.id);
+          await supabase.schema('admin').from("custom_task_subtasks").delete().in("custom_task_id", taskIds);
+          await supabase.schema('admin').from("custom_tasks").delete().eq("client_id", id);
+        }
+      } catch (e) {
+        console.warn("Could not delete custom task records:", e);
+      }
+
+      await Promise.allSettled([
+        supabase.schema('admin').from("client_icp").delete().eq("client_id", id),
+        supabase.schema('admin').from("client_users").delete().eq("client_id", id),
+        supabase.schema('admin').from("prompts").delete().eq("client_id", id),
+        supabase.schema('admin').from("client_custom_data_sources").delete().eq("client_id", id),
+        supabase.from("article_processing_log").delete().eq("client_id", id),
+        supabase.from("pipeline_job_status").delete().eq("client_id", id)
+      ]);
+
+      const { error: clientDeleteError } = await supabase.schema('admin').from("clients").delete().eq("id", id);
+      if (clientDeleteError) {
+        throw clientDeleteError;
+      }
+
+      // Remove from client state once deletion completes
+      setCustomers(prev => prev.filter(c => c.id !== id));
       await loadConsoleData(true);
       showToast("Client deleted successfully!");
     } catch (err: any) {
       console.error("Error deleting customer", err);
       showToast(err.message || "Error deleting client", 'error');
+      await loadConsoleData(true);
+      throw err;
     }
   };
 
@@ -587,7 +628,7 @@ export default function App() {
                     window.dispatchEvent(new CustomEvent("open-onboard-modal"));
                   }}
                   id="btn-onboard"
-                  className="flex items-center gap-1.5 bg-[#4f46e5] hover:bg-[#4338ca] text-white text-[11px] font-semibold px-3 py-1.5 transition-colors cursor-pointer"
+                  className="flex items-center gap-1.5 bg-[#4f46e5] hover:bg-[#4338ca] active:bg-[#3730a3] active:scale-[0.98] text-white text-[11px] font-semibold px-3 py-1.5 transition-all cursor-pointer shadow-xs"
                   style={{ borderRadius: "5px" }}
                 >
                   {/* Plus person icon */}

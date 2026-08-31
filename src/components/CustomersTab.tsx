@@ -43,7 +43,7 @@ import {
 
 interface CustomersTabProps {
   customers: Customer[];
-  onAddCustomer: (customer: Omit<Customer, 'id' | 'joinedDate' | 'apiCallsCount'>) => Promise<void>;
+  onAddCustomer: (customer: Omit<Customer, 'id' | 'joinedDate' | 'apiCallsCount'>) => Promise<string | void>;
   onUpdateCustomer: (id: string, customer: Partial<Customer>) => Promise<void>;
   onDeleteCustomer: (id: string) => Promise<void>;
   showToast: (message: string, type?: 'success' | 'error') => void;
@@ -63,6 +63,26 @@ export default function CustomersTab({
   const [selectedClientId, setSelectedClientId] = useState<string>("");
   const [detailClientId, setDetailClientId] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [clientToDelete, setClientToDelete] = useState<Customer | null>(null);
+  const [isDeletingClient, setIsDeletingClient] = useState(false);
+  const [isCreatingClient, setIsCreatingClient] = useState(false);
+
+  const handleConfirmDeleteClient = async () => {
+    if (!clientToDelete || !onDeleteCustomer) return;
+    setIsDeletingClient(true);
+    try {
+      await onDeleteCustomer(clientToDelete.id);
+      if (detailClientId === clientToDelete.id) {
+        setDetailClientId(null);
+        setSelectedClientId("");
+      }
+      setClientToDelete(null);
+    } catch (err: any) {
+      showToast(err.message || "Failed to delete client", "error");
+    } finally {
+      setIsDeletingClient(false);
+    }
+  };
 
   // Search and pagination states
   const [searchQuery, setSearchQuery] = useState("");
@@ -125,7 +145,7 @@ export default function CustomersTab({
   // Target customer payload for new customer onboarding
   const [newCustName, setNewCustName] = useState("");
   const [newCustCompany, setNewCustCompany] = useState("");
-  const [newCustSector, setNewCustSector] = useState("Market Research");
+  const [newCustSector, setNewCustSector] = useState("");
   const [newCustEmail, setNewCustEmail] = useState("");
   const [newCustDescription, setNewCustDescription] = useState("");
   const [newCustCoreProducts, setNewCustCoreProducts] = useState("");
@@ -208,7 +228,7 @@ export default function CustomersTab({
       name: newCustName || newCustCompany || "New Client",
       company: newCustCompany,
       sector: newCustSector,
-      location: newCustLocation || "London, UK",
+      location: newCustLocation,
       status: 'active' as const,
       email: `${newCustCompany.toLowerCase().replace(/\s/g, '')}@example.com`,
       description: newCustDescription,
@@ -221,8 +241,8 @@ export default function CustomersTab({
       sectorsToAvoid: newCustSectorsToAvoid,
       dealSizeMin: 50000,
       dealSizeMax: 1000000,
-      geographyWeights: { [newCustGeographies.split(',')[0] || "Global"]: 1.0 },
-      sectorWeights: { [newCustCoreSectors.toLowerCase() || "market research"]: 1.0 },
+      geographyWeights: newCustGeographies ? { [newCustGeographies.split(',')[0].trim() || "Global"]: 1.0 } : {},
+      sectorWeights: newCustCoreSectors ? { [newCustCoreSectors.toLowerCase().split(',')[0].trim() || "sector"]: 1.0 } : {},
       targetAccounts: "",
       existingRelationships: "",
       blacklistCompanies: "",
@@ -233,27 +253,32 @@ export default function CustomersTab({
       coreSectors: newCustCoreSectors
     };
 
-    await onAddCustomer(payload);
-    setShowAddModal(false);
-    setNewCustName("");
-    setNewCustCompany("");
-    setNewCustDescription("");
-    setNewCustCoreProducts("");
-    setNewCustCompetitors("");
-    setNewCustCoreSectors("");
-    setNewCustGeographies("");
-    setNewCustSectorsToAvoid("");
-    setNewCustDesignations("");
-    setNewCustLocation("");
-    
-    // Select the new client and view its details automatically
-    setTimeout(() => {
-      const newlyAdded = customers[customers.length - 1];
-      if (newlyAdded) {
-        setSelectedClientId(newlyAdded.id);
-        setDetailClientId(newlyAdded.id);
+    setIsCreatingClient(true);
+    try {
+      const newClientId = await onAddCustomer(payload);
+      setShowAddModal(false);
+      setNewCustName("");
+      setNewCustCompany("");
+      setNewCustSector("");
+      setNewCustDescription("");
+      setNewCustCoreProducts("");
+      setNewCustCompetitors("");
+      setNewCustCoreSectors("");
+      setNewCustGeographies("");
+      setNewCustSectorsToAvoid("");
+      setNewCustDesignations("");
+      setNewCustLocation("");
+      
+      // Select the new client and view its details automatically using the returned ID
+      if (newClientId && typeof newClientId === 'string') {
+        setSelectedClientId(newClientId);
+        setDetailClientId(newClientId);
       }
-    }, 500);
+    } catch (err: any) {
+      showToast(err.message || "Failed to create client", "error");
+    } finally {
+      setIsCreatingClient(false);
+    }
   };
 
   useEffect(() => {
@@ -294,6 +319,7 @@ export default function CustomersTab({
             selectedClientId={selectedClientId}
             activeClient={activeClientInModal}
             onUpdateCustomer={onUpdateCustomer}
+            onDeleteCustomer={onDeleteCustomer}
             showToast={showToast}
             onBack={() => setDetailClientId(null)}
             customers={customers}
@@ -399,24 +425,35 @@ export default function CustomersTab({
                               </select>
                             </td>
                             <td className="py-1.5 px-5 text-right">
-                              <button
-                                onClick={() => {
-                                  if (c.status === 'active') {
-                                    setSelectedClientId(c.id);
-                                    setDetailClientId(c.id);
-                                  }
-                                }}
-                                disabled={c.status !== 'active'}
-                                className={`inline-flex items-center justify-center p-1.5 transition-all rounded-[6px] duration-150 ${
-                                  c.status === 'active' 
-                                    ? "text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50/70 cursor-pointer" 
-                                    : "text-slate-300 cursor-not-allowed"
-                                }`}
-                                title={c.status === 'active' ? "View More Details" : "Client Suspended"}
-                                aria-label={c.status === 'active' ? `View More Details for ${c.company}` : `${c.company} Is Suspended`}
-                              >
-                                <Settings className="h-4 w-4" />
-                              </button>
+                              <div className="flex items-center justify-end gap-1">
+                                <button
+                                  onClick={() => {
+                                    if (c.status === 'active') {
+                                      setSelectedClientId(c.id);
+                                      setDetailClientId(c.id);
+                                    }
+                                  }}
+                                  disabled={c.status !== 'active'}
+                                  className={`inline-flex items-center justify-center p-1.5 transition-all rounded-[6px] duration-150 ${
+                                    c.status === 'active' 
+                                      ? "text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50/70 active:bg-indigo-100 active:scale-95 cursor-pointer" 
+                                      : "text-slate-300 cursor-not-allowed"
+                                  }`}
+                                  title={c.status === 'active' ? "View More Details" : "Client Suspended"}
+                                  aria-label={c.status === 'active' ? `View More Details for ${c.company}` : `${c.company} Is Suspended`}
+                                >
+                                  <Settings className="h-4 w-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setClientToDelete(c)}
+                                  className="inline-flex items-center justify-center p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 active:bg-red-100 active:scale-95 transition-all rounded-[6px] duration-150 cursor-pointer"
+                                  title={`Delete ${c.company}`}
+                                  aria-label={`Delete ${c.company}`}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -577,16 +614,28 @@ export default function CustomersTab({
               <div className="flex justify-end gap-3 pt-3 border-t border-gray-100 mt-1">
                 <button 
                   type="button" 
+                  disabled={isCreatingClient}
                   onClick={() => setShowAddModal(false)} 
-                  className="bg-white hover:bg-gray-50 text-slate-700 text-xs font-semibold px-4 py-1.5 border border-gray-200 cursor-pointer rounded-[6px] transition-all"
+                  className="bg-white hover:bg-gray-50 active:bg-gray-100 text-slate-700 text-xs font-semibold px-4 py-1.5 border border-gray-200 cursor-pointer rounded-[6px] transition-all disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button 
                   type="submit" 
-                  className="bg-[#1e293b] hover:bg-slate-800 text-white text-xs font-semibold px-5 py-1.5 cursor-pointer rounded-[6px] flex items-center gap-2 transition-all shadow-sm"
+                  disabled={isCreatingClient}
+                  className="bg-[#1e293b] hover:bg-slate-800 active:bg-slate-900 active:scale-[0.98] text-white text-xs font-semibold px-5 py-1.5 cursor-pointer rounded-[6px] flex items-center gap-2 transition-all shadow-sm disabled:opacity-60"
                 >
-                  <Check className="h-3.5 w-3.5 stroke-[2.5]" /> Create Client & Activate
+                  {isCreatingClient ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span>Creating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="h-3.5 w-3.5 stroke-[2.5]" />
+                      <span>Create Client & Activate</span>
+                    </>
+                  )}
                 </button>
               </div>
 
@@ -595,6 +644,52 @@ export default function CustomersTab({
         </div>
       )}
 
+      {/* 4. Delete Client Confirmation Modal */}
+      {clientToDelete && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="relative bg-white w-full max-w-sm border border-slate-200 shadow-xl overflow-hidden rounded-lg">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+              <h3 className="text-sm font-bold text-slate-900">Delete Client</h3>
+              <button 
+                onClick={() => !isDeletingClient && setClientToDelete(null)}
+                disabled={isDeletingClient}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-md transition-colors cursor-pointer disabled:opacity-40"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-5">
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Are you sure you want to delete <strong className="text-slate-900 font-semibold">{clientToDelete.company}</strong>? This action cannot be undone.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2.5 px-5 py-3.5 bg-slate-50 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isDeletingClient}
+                onClick={() => setClientToDelete(null)}
+                className="bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold px-3.5 py-2 border border-slate-200 cursor-pointer rounded-md transition-all disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingClient}
+                onClick={handleConfirmDeleteClient}
+                className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-4 py-2 cursor-pointer rounded-md flex items-center gap-1.5 transition-all shadow-xs disabled:opacity-70 active:scale-95"
+              >
+                {isDeletingClient ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Deleting...
+                  </>
+                ) : (
+                  <span>Delete</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       </div>
 

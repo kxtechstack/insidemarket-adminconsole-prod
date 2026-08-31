@@ -143,6 +143,71 @@ async function startServer() {
   app.delete("/api/admin/delete-user", handleDeleteUser);
   app.post("/api/admin/delete-user", handleDeleteUser);
 
+  // Admin delete-client handler
+  const handleDeleteClient = async (req: express.Request, res: express.Response) => {
+    try {
+      const clientId = req.body?.clientId || req.body?.id || req.query?.clientId || req.query?.id;
+      if (!clientId) {
+        return res.status(400).json({ success: false, error: "clientId is required" });
+      }
+
+      const supabaseAdmin = getSupabaseAdmin();
+
+      // 1. Delete associated auth users if any
+      try {
+        const { data: users } = await supabaseAdmin.schema("admin").from("client_users").select("id, email").eq("client_id", clientId);
+        if (users && users.length > 0) {
+          for (const u of users) {
+            if (isUUID(u.id)) {
+              await supabaseAdmin.auth.admin.deleteUser(u.id).catch(() => {});
+            }
+          }
+        }
+      } catch (authErr) {
+        console.warn("Could not delete associated auth users:", authErr);
+      }
+
+      // 2. Delete custom task subtasks and custom tasks
+      try {
+        const { data: tasks } = await supabaseAdmin.schema("admin").from("custom_tasks").select("id").eq("client_id", clientId);
+        if (tasks && tasks.length > 0) {
+          const taskIds = tasks.map(t => t.id);
+          await supabaseAdmin.schema("admin").from("custom_task_subtasks").delete().in("custom_task_id", taskIds);
+          await supabaseAdmin.schema("admin").from("custom_tasks").delete().eq("client_id", clientId);
+        }
+      } catch (taskErr) {
+        console.warn("Could not delete custom tasks:", taskErr);
+      }
+
+      // 3. Delete dependent rows
+      await Promise.allSettled([
+        supabaseAdmin.schema("admin").from("client_icp").delete().eq("client_id", clientId),
+        supabaseAdmin.schema("admin").from("client_users").delete().eq("client_id", clientId),
+        supabaseAdmin.schema("admin").from("prompts").delete().eq("client_id", clientId),
+        supabaseAdmin.schema("admin").from("client_custom_data_sources").delete().eq("client_id", clientId),
+        supabaseAdmin.from("article_processing_log").delete().eq("client_id", clientId),
+        supabaseAdmin.from("pipeline_job_status").delete().eq("client_id", clientId)
+      ]);
+
+      // 4. Delete client record
+      const { error: clientErr } = await supabaseAdmin.schema("admin").from("clients").delete().eq("id", clientId);
+      if (clientErr) {
+        console.error("Error deleting from clients table:", clientErr);
+        return res.status(500).json({ success: false, error: clientErr.message });
+      }
+
+      return res.json({ success: true, message: "Client and all associated resources deleted successfully" });
+    } catch (err: any) {
+      console.error("Error in delete-client endpoint:", err);
+      return res.status(500).json({ success: false, error: err.message || "Failed to delete client" });
+    }
+  };
+
+  app.delete("/admin/delete-client", handleDeleteClient);
+  app.post("/admin/delete-client", handleDeleteClient);
+  app.delete("/api/admin/delete-client", handleDeleteClient);
+  app.post("/api/admin/delete-client", handleDeleteClient);
+
   // Admin invite-user handler
   const handleInviteUser = async (req: express.Request, res: express.Response) => {
     try {

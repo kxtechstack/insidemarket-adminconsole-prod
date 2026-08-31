@@ -23,6 +23,7 @@ interface ClientDetailViewProps {
   selectedClientId: string;
   activeClient: Customer;
   onUpdateCustomer: (id: string, customer: Partial<Customer>) => Promise<void>;
+  onDeleteCustomer?: (id: string) => Promise<void>;
   showToast: (message: string, type?: 'success' | 'error') => void;
   onBack: () => void;
   customers: Customer[];
@@ -33,6 +34,7 @@ export default function ClientDetailView({
   selectedClientId,
   activeClient,
   onUpdateCustomer,
+  onDeleteCustomer,
   showToast,
   onBack,
   customers,
@@ -40,38 +42,40 @@ export default function ClientDetailView({
 }: ClientDetailViewProps) {
   
   const [activeDetailTab, setActiveDetailTab] = useState<'basic' | 'scope' | 'collection' | 'rules' | 'datasources'>('basic');
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     setActiveDetailTab('basic');
   }, [selectedClientId]);
 
   // Form states matching scoring profile fields
-  const [primaryGeographies, setPrimaryGeographies] = useState(activeClient.promptVariables?.geographicScope || activeClient.primaryGeographies || "IN, SG, MY");
-  const [coreSectors, setCoreSectors] = useState(activeClient.coreSectors || "market research, consulting, fintech, logistics");
-  const [focusProducts, setFocusProducts] = useState(activeClient.promptVariables?.focusProducts || "market research, consulting, fintech, logistics");
-  const [sectorsToAvoid, setSectorsToAvoid] = useState(activeClient.sectorsToAvoid || "aerospace, defence");
-  const [knownCompetitors, setKnownCompetitors] = useState(activeClient.promptVariables?.competitors || activeClient.knownCompetitors || "Frost & Sullivan, IDC, Gartner");
+  const [primaryGeographies, setPrimaryGeographies] = useState(activeClient.promptVariables?.geographicScope ?? activeClient.primaryGeographies ?? "");
+  const [coreSectors, setCoreSectors] = useState(activeClient.coreSectors ?? "");
+  const [focusProducts, setFocusProducts] = useState(activeClient.promptVariables?.focusProducts ?? "");
+  const [sectorsToAvoid, setSectorsToAvoid] = useState(activeClient.sectorsToAvoid ?? "");
+  const [knownCompetitors, setKnownCompetitors] = useState(activeClient.promptVariables?.competitors ?? activeClient.knownCompetitors ?? "");
   const [dealSizeMin, setDealSizeMin] = useState(activeClient.dealSizeMin ?? 50000);
   const [dealSizeMax, setDealSizeMax] = useState(activeClient.dealSizeMax ?? 500000);
 
   // Dynamic slider weights
-  const [geoWeights, setGeoWeights] = useState<Record<string, number>>(activeClient.geographyWeights || { IN: 1.0, SG: 0.8, MY: 0.7 });
-  const [sectorWeights, setSectorWeights] = useState<Record<string, number>>(activeClient.sectorWeights || { "market research": 0.9, consulting: 0.85, fintech: 0.8, logistics: 0.75 });
+  const [geoWeights, setGeoWeights] = useState<Record<string, number>>(activeClient.geographyWeights || {});
+  const [sectorWeights, setSectorWeights] = useState<Record<string, number>>(activeClient.sectorWeights || {});
 
   // Tier 3 parameters 
-  const [targetAccounts, setTargetAccounts] = useState(activeClient.targetAccounts || "Zetwerk, NovaPay, Delhivery");
-  const [existingRelationships, setExistingRelationships] = useState(activeClient.existingRelationships || "");
-  const [blacklistCompanies, setBlacklistCompanies] = useState(activeClient.blacklistCompanies || "Competitor clients, conflicted companies");
-  const [keyContacts, setKeyContacts] = useState(activeClient.keyContacts || "");
+  const [targetAccounts, setTargetAccounts] = useState(activeClient.targetAccounts ?? "");
+  const [existingRelationships, setExistingRelationships] = useState(activeClient.existingRelationships ?? "");
+  const [blacklistCompanies, setBlacklistCompanies] = useState(activeClient.blacklistCompanies ?? "");
+  const [keyContacts, setKeyContacts] = useState(activeClient.keyContacts ?? "");
   const [pipelineStatus, setPipelineStatus] = useState(activeClient.pipelineStatus || "available — normal scoring");
-  const [sectorsToEnter, setSectorsToEnter] = useState(activeClient.sectorsToEnter || "");
-  const [designations, setDesignations] = useState(activeClient.designations || "");
+  const [sectorsToEnter, setSectorsToEnter] = useState(activeClient.sectorsToEnter ?? "");
+  const [designations, setDesignations] = useState(activeClient.designations ?? "");
 
   // Basic client identity states (to map to the form inputs)
-  const [editCompany, setEditCompany] = useState(activeClient.company || "");
-  const [editSector, setEditSector] = useState(activeClient.sector || "");
-  const [editLocation, setEditLocation] = useState(activeClient.location || "");
-  const [description, setDescription] = useState(activeClient.description || "");
+  const [editCompany, setEditCompany] = useState(activeClient.company ?? "");
+  const [editSector, setEditSector] = useState(activeClient.sector ?? "");
+  const [editLocation, setEditLocation] = useState(activeClient.location ?? "");
+  const [description, setDescription] = useState(activeClient.description ?? "");
 
   // Monitoring Scope states
   const [activeModuleId, setActiveModuleId] = useState<string>("");
@@ -121,17 +125,49 @@ export default function ClientDetailView({
   }, [activeClient]);
 
   useEffect(() => {
+    const geoScope = activeClient.promptVariables?.geographicScope ?? activeClient.primaryGeographies ?? "";
+    const fProducts = activeClient.promptVariables?.focusProducts ?? "";
+    const cSectors = activeClient.coreSectors ?? "";
+    const sToAvoid = activeClient.sectorsToAvoid ?? "";
+    const comps = activeClient.promptVariables?.competitors ?? activeClient.knownCompetitors ?? "";
+    const desigs = activeClient.designations ?? "";
+    const comp = activeClient.company ?? "";
+    const sec = activeClient.sector ?? "";
+    const loc = activeClient.location ?? "";
+    const desc = activeClient.description ?? "";
+
+    setPrimaryGeographies(geoScope);
+    setFocusProducts(fProducts);
+    setCoreSectors(cSectors);
+    setSectorsToAvoid(sToAvoid);
+    setKnownCompetitors(comps);
+    setDesignations(desigs);
+    setEditCompany(comp);
+    setEditSector(sec);
+    setEditLocation(loc);
+    setDescription(desc);
+
+    setTargetAccounts(activeClient.targetAccounts ?? "");
+    setBlacklistCompanies(activeClient.blacklistCompanies ?? "");
+    setExistingRelationships(activeClient.existingRelationships ?? "");
+    setSectorsToEnter(activeClient.sectorsToEnter ?? "");
+    setPipelineStatus(activeClient.pipelineStatus || "available — normal scoring");
+    if (activeClient.dealSizeMin !== undefined) setDealSizeMin(activeClient.dealSizeMin);
+    if (activeClient.dealSizeMax !== undefined) setDealSizeMax(activeClient.dealSizeMax);
+    if (activeClient.geographyWeights) setGeoWeights(activeClient.geographyWeights);
+    if (activeClient.sectorWeights) setSectorWeights(activeClient.sectorWeights);
+
     setPersistedBasicInfo({
-      primaryGeographies: activeClient.promptVariables?.geographicScope || activeClient.primaryGeographies || "IN, SG, MY",
-      focusProducts: activeClient.promptVariables?.focusProducts || "market research, consulting, fintech, logistics",
-      coreSectors: activeClient.coreSectors || "market research, consulting, fintech, logistics",
-      sectorsToAvoid: activeClient.sectorsToAvoid || "aerospace, defence",
-      knownCompetitors: activeClient.promptVariables?.competitors || activeClient.knownCompetitors || "Frost & Sullivan, IDC, Gartner",
-      designations: activeClient.designations || "",
-      editCompany: activeClient.company || "",
-      editSector: activeClient.sector || "",
-      editLocation: activeClient.location || "",
-      description: activeClient.description || "",
+      primaryGeographies: geoScope,
+      focusProducts: fProducts,
+      coreSectors: cSectors,
+      sectorsToAvoid: sToAvoid,
+      knownCompetitors: comps,
+      designations: desigs,
+      editCompany: comp,
+      editSector: sec,
+      editLocation: loc,
+      description: desc,
     });
   }, [activeClient]);
 
@@ -643,6 +679,57 @@ export default function ClientDetailView({
         console.error("Error updating enabled_modules in clients table:", clientUpdateError);
       }
 
+      // Sync submodule schedules active status to backend to ensure disabled submodules don't run on schedule
+      try {
+        const { data: clientPrompts } = await supabase.schema('admin')
+          .from('prompts')
+          .select('id, module_id, submodule_id, custom_task_id, prompt_text')
+          .eq('client_id', selectedClientId);
+
+        if (clientPrompts && clientPrompts.length > 0) {
+          const syncPromises = clientPrompts.map(async (p: any) => {
+            const subId = p.submodule_id || p.custom_task_id;
+            const modId = p.module_id || 'custom_tasks';
+            if (!subId) return;
+
+            const isModEnabled = Boolean(enabledModules[modId]);
+            let isSubActive = isModEnabled;
+            if (isModEnabled) {
+              if (modId === 'custom_tasks') {
+                const taskList = customTasks[selectedClientId] || [];
+                const task = taskList.find(t => t.id === subId);
+                if (task && task.subTasks && task.subTasks.length > 0 && selectedCustomSignals[subId] !== undefined) {
+                  isSubActive = selectedCustomSignals[subId].length > 0;
+                }
+              } else {
+                const mod = INTELLIGENCE_MODULES?.find(m => m.id === modId);
+                const cat = mod?.categories?.find((c: any) => c.id === subId);
+                if (cat && cat.items && cat.items.length > 0 && selectedSignals[subId] !== undefined) {
+                  isSubActive = selectedSignals[subId].length > 0;
+                }
+              }
+            }
+
+            return fetch(`${import.meta.env.VITE_API_URL}/schedules`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                clientId: selectedClientId,
+                submoduleId: subId,
+                moduleId: modId,
+                promptText: p.prompt_text,
+                industry: activeClient.sector || 'Unknown',
+                isActive: isSubActive
+              })
+            }).catch(e => console.warn(`Failed to sync schedule active state for ${subId}:`, e));
+          });
+
+          await Promise.allSettled(syncPromises);
+        }
+      } catch (scheduleSyncErr) {
+        console.warn("Could not sync schedule active statuses:", scheduleSyncErr);
+      }
+
       await onUpdateCustomer(selectedClientId, {
         enabled_modules: enabledModulesList,
         enabledModules: enabledModulesList,
@@ -701,6 +788,17 @@ export default function ClientDetailView({
             <p className="text-[11px] text-slate-700 font-medium mt-0.5">{activeClient.sector}</p>
           </div>
         </div>
+        {onDeleteCustomer && (
+          <button
+            type="button"
+            onClick={() => setShowDeleteModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-red-600 hover:text-red-700 hover:bg-red-50 active:bg-red-100 active:scale-[0.98] border border-red-200 transition-all rounded-[6px] cursor-pointer shadow-xs"
+            title="Delete this client"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            <span>Delete Client</span>
+          </button>
+        )}
       </div>
 
       <div className="border-[#e2e8f0] border-b mb-4">
@@ -1083,6 +1181,64 @@ export default function ClientDetailView({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Delete Client Confirmation Modal */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="relative bg-white w-full max-w-sm border border-slate-200 shadow-xl overflow-hidden rounded-lg">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+              <h3 className="text-sm font-bold text-slate-900">Delete Client</h3>
+              <button 
+                onClick={() => !isDeleting && setShowDeleteModal(false)}
+                disabled={isDeleting}
+                className="text-slate-400 hover:text-slate-650 p-1 rounded-md transition-colors cursor-pointer disabled:opacity-40"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-5">
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Are you sure you want to delete <strong className="text-slate-900 font-semibold">{activeClient.company}</strong>? This action cannot be undone.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2.5 px-5 py-3.5 bg-slate-50 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setShowDeleteModal(false)}
+                className="bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold px-3.5 py-2 border border-slate-200 cursor-pointer rounded-md transition-all disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={async () => {
+                  if (!onDeleteCustomer) return;
+                  setIsDeleting(true);
+                  try {
+                    await onDeleteCustomer(selectedClientId);
+                    setShowDeleteModal(false);
+                    onBack();
+                  } catch (err: any) {
+                    showToast(err.message || "Failed to delete client", 'error');
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+                className="bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-4 py-2 cursor-pointer rounded-md flex items-center gap-1.5 transition-all shadow-xs disabled:opacity-70 active:scale-95"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Deleting...
+                  </>
+                ) : (
+                  <span>Delete</span>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

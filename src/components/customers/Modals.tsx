@@ -127,13 +127,13 @@ export const OnboardModal: React.FC<OnboardModalProps> = ({
             <button 
               type="button" 
               onClick={onClose} 
-              className="bg-white hover:bg-gray-50 text-slate-700 text-xs font-semibold px-4 py-1.5 border border-gray-200 cursor-pointer rounded-[6px] transition-all"
+              className="bg-white hover:bg-gray-50 active:bg-gray-100 text-slate-700 text-xs font-semibold px-4 py-1.5 border border-gray-200 cursor-pointer rounded-[6px] transition-all"
             >
               Cancel
             </button>
             <button 
               type="submit" 
-              className="bg-[#1e293b] hover:bg-slate-800 text-white text-xs font-semibold px-5 py-1.5 cursor-pointer rounded-[6px] flex items-center gap-2 transition-all shadow-sm"
+              className="bg-[#1e293b] hover:bg-slate-800 active:bg-slate-900 active:scale-[0.98] text-white text-xs font-semibold px-5 py-1.5 cursor-pointer rounded-[6px] flex items-center gap-2 transition-all shadow-sm"
             >
               <Check className="h-3.5 w-3.5 stroke-[2.5]" /> Create Client & Activate
             </button>
